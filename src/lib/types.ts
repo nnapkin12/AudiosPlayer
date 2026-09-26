@@ -103,6 +103,23 @@ export interface Tick {
   durationMs: number;
 }
 
+export interface RemoteClient {
+  id: number;
+  name: string;
+  connected: boolean;
+}
+
+export interface RemoteStatus {
+  running: boolean;
+  url: string | null;
+  urls: string[];
+  code: string | null;
+  qrSvg: string | null;
+  indexing: boolean;
+  songs: number;
+  clients: RemoteClient[];
+}
+
 export interface TagFields {
   title: string;
   artists: string;

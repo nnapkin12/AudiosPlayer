@@ -11,6 +11,7 @@ mod persist;
 mod player;
 mod playlists;
 mod relink;
+mod remote;
 mod search;
 mod tags;
 mod watch;
@@ -32,7 +33,9 @@ pub fn run() {
             let player = Player::new(app.handle().clone(), persist.clone());
             #[cfg(target_os = "linux")]
             media::start(player.clone());
+            let remote = remote::Remote::new(app.handle().clone(), player.clone(), persist.clone());
             app.manage(player);
+            app.manage(remote);
             watch::spawn(app.handle().clone(), persist);
             #[cfg(target_os = "linux")]
             desktop::install();
@@ -100,6 +103,9 @@ pub fn run() {
             commands::set_minimize_movement,
             commands::save_custom_theme,
             commands::delete_custom_theme,
+            commands::remote_status,
+            commands::remote_start,
+            commands::remote_stop,
             commands::search_stream,
             commands::search_media,
             commands::search_covers,

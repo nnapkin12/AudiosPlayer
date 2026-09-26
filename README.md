@@ -5,8 +5,8 @@
 <h1 align="center">Audios!</h1>
 
 <p align="center">
-  A Linux music player, finder, and metadata editor.<br>
-  Local libraries, YouTube search via yt-dlp, tag editing, and custom EQ profiles.
+  A Linux music player, tag editor, and library browser.<br>
+  Local files, yt-dlp search, a parametric EQ, and remote on the same Wi-Fi.
 </p>
 
 <p align="center">
@@ -21,28 +21,31 @@
   GitHub: <a href="https://github.com/nnapkin12/AudiosPlayer">AudiosPlayer</a>
 </p>
 
-## Quick Intro
+## What it is
 
-Audios! is a Linux music player for local files, or building your collection. Open a file or a nested album tree, queue it, and play. Search uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) to list YouTube results, then caches a temp file for playback (deleted when the track changes) or saves a copy. The Tags tab edits metadata and artwork. Settings includes built-in themes and a theme builder.
+Audios! is a music player, plays music already on disk, and can pull extra tracks with [yt-dlp](https://github.com/yt-dlp/yt-dlp). Open a file or a folder tree and that becomes the library. Search lists YouTube and SoundCloud, then plays a temp file or saves a copy. The Tags tab writes metadata and artwork. Settings holds themes, the equalizer, and the web remote.
 
-It is built with Rust and a React UI hosted by [Tauri](https://tauri.app/).
+The UI is React. Playback, tags, search, and the remote run in Rust, hosted by [Tauri](https://tauri.app/).
 
-It is **not** a Spotify client. Search cannot pull Spotify-hosted audio.
+It is not a Spotify client. Search cannot pull Spotify-hosted audio. Every search play writes a local file. There is no in-browser stream.
 
 ## Features
 
-- **Music Player** — Playlists, nested albums, queue, repeat, shuffle, gapless, ReplayGain, and an app-wide parametric EQ (Settings → Equalizer) with a response curve, tone sliders, and AutoEQ paste. Library folders, and folders added to a playlist, follow the disk when songs are added or removed. Playlists are named lists with a custom picture, otherwise a mosaic from track artwork. An open playlist, artist, or album shows a small cover above the songs. Library and playlist lists have their own search bars.
-- **Search** — query by song and artist, or paste a link. Text search lists YouTube and SoundCloud. Results show thumbnails. Play uses a temp file that is deleted on track change; Download keeps a copy.
-- **Metadata Editor** — title, artists, album, lyrics, ReplayGain, MusicBrainz IDs, custom fields, artwork (including Find artwork), and batch apply across a folder. Save stays on screen, and saved tags show up in the player immediately.
-- **Themes** — Dusk, Midnight, Slate, Paper, plus a theme builder with simple grouped colors and Advanced per-token edits.
+- **Library** — Nested folders, playlists, and a queue. Repeat, shuffle, gapless playback, ReplayGain, and speed from 0.5× to 2×. Folders stay linked to disk, so files added or removed outside the app show up. A moved file is relinked when the name is unique. Otherwise **Locate** asks for the new path.
+- **Playlists and Discover** — Playlists are named lists. Set a picture, or leave the 2×2 mosaic built from track art. Adding a folder keeps that folder link. Library and playlist views each have a search bar. Discover shows artists already in the library.
+- **Equalizer** — One parametric curve for everything Audios! plays (Settings → Equalizer). Tone sliders, a ten-band editor, a response graph, and AutoEQ paste. Saved profiles live with the rest of app state.
+- **Search** — A song and artist query, or a pasted link. Text search covers YouTube and SoundCloud. A link can be any site yt-dlp supports. Play uses a temp file, deleted when another search track starts. Download keeps a copy through the system save dialog.
+- **Tags** — Title, artists, album, lyrics, ReplayGain, MusicBrainz IDs, custom fields, and artwork, including Find artwork. Batch apply across a folder. A save updates the open list and the song that is playing.
+- **Remote** — Settings → Remote (Audios! web) listens on the home network. The link and QR open a phone page: cover, play and pause, seek, shuffle, volume, and a search of songs already in the library. A pairing code is part of the URL. Sound stays on the computer.
+- **Desktop** — Linux MPRIS shows the current song and art, and accepts play, pause, seek, next, and previous. Themes are Dusk, Midnight, Slate, and Paper, plus a theme builder.
 
-A longer list lives in [docs/features.md](docs/features.md).
-
-
+A longer list is in [docs/features.md](docs/features.md).
 
 ## Releases
 
-GitHub Release assets are  two installer files, Music Search still needs a **host** (installed yt-dlp, ffmpeg, and curl); they are not inside the package.
+GitHub Release assets are a `.deb` and an AppImage.
+
+Search is not bundled. It needs a current [yt-dlp](https://github.com/yt-dlp/yt-dlp), ffmpeg, and curl on the machine. Distro copies of yt-dlp are often too old for current YouTube.
 
 ## License
 

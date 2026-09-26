@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Plus, X } from "lucide-react";
 import { EqPanel } from "@/features/settings/EqPanel";
+import { RemotePanel } from "@/features/settings/RemotePanel";
 import { ThemeBuilder } from "@/features/settings/ThemeBuilder";
 import { api, openExternal } from "@/lib/api";
 import { errorMessage } from "@/lib/format";
@@ -19,6 +20,7 @@ const SECTIONS = [
   ["equalizer", "Equalizer"],
   ["appearance", "Appearance"],
   ["library", "Library"],
+  ["remote", "Remote"],
   ["about", "About"],
 ] as const;
 
@@ -203,6 +205,8 @@ export function SettingsView() {
               </ul>
             )
           ) : null}
+
+          {section === "remote" ? <RemotePanel /> : null}
 
           {section === "about" ? (
             <div className="flex flex-col items-start gap-2">

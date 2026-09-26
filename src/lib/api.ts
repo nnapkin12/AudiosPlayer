@@ -7,6 +7,7 @@ import type {
   MissingItem,
   Playlist,
   PlayerSnapshot,
+  RemoteStatus,
   RepeatMode,
   TagDoc,
   TagFields,
@@ -222,6 +223,9 @@ export const api = {
   saveCustomTheme: (theme: CustomTheme) =>
     invoke<Appearance>("save_custom_theme", { theme }),
   deleteCustomTheme: (id: string) => invoke<Appearance>("delete_custom_theme", { id }),
+  remoteStatus: () => invoke<RemoteStatus>("remote_status"),
+  remoteStart: () => invoke<RemoteStatus>("remote_start"),
+  remoteStop: () => invoke<RemoteStatus>("remote_stop"),
   searchStream: (query: string) => invoke<MediaHit>("search_stream", { query }),
   searchMedia: (query: string) => invoke<MediaHit[]>("search_media", { query }),
   searchCovers: (query: string) => invoke<MediaHit[]>("search_covers", { query }),

@@ -413,6 +413,23 @@ pub fn delete_custom_theme(store: State<Store>, id: String) -> Appearance {
 }
 
 #[tauri::command]
+pub fn remote_status(remote: State<crate::remote::Remote>) -> crate::remote::RemoteStatus {
+    remote.status()
+}
+
+#[tauri::command]
+pub fn remote_start(
+    remote: State<crate::remote::Remote>,
+) -> AppResult<crate::remote::RemoteStatus> {
+    remote.start()
+}
+
+#[tauri::command]
+pub fn remote_stop(remote: State<crate::remote::Remote>) -> crate::remote::RemoteStatus {
+    remote.stop()
+}
+
+#[tauri::command]
 pub async fn search_stream(query: String) -> AppResult<MediaHit> {
     run_blocking(move || crate::search::search_stream(&query)).await
 }

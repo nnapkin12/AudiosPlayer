@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<meta name="robots" content="noindex">
+<title>Audios!</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #111;
+    color: #f3f3f3;
+  }
+  body {
+    position: fixed;
+    inset: 0;
+    font: 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  main {
+    height: 100%;
+    max-width: 440px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: max(12px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+  }
+  #top {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+  }
+  #gear, #shuffle {
+    flex: none;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #9a9a9a;
+    padding: 0;
+  }
+  #gear {
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+  }
+  #shuffle {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    width: 52px;
+    font-size: 10px;
+    line-height: 1.1;
+    font-weight: 650;
+  }
+  #gear[aria-expanded="true"], #shuffle.on { color: #f3f3f3; }
+  #q {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    border-radius: 12px;
+    background: #1c1c1c;
+    color: inherit;
+    font: inherit;
+    padding: 12px 14px;
+  }
+  #q:focus { outline: 2px solid #3a3a3a; }
+  #menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    width: min(280px, calc(100vw - 32px));
+    padding: 12px;
+    border-radius: 14px;
+    background: #1c1c1c;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.45);
+  }
+  #menu p {
+    margin: 0 0 8px;
+    color: #8d8d8d;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  #menu p + p { margin-top: 14px; }
+  .choices { display: flex; flex-direction: column; gap: 4px; }
+  .choices button, #speed button {
+    border: 0;
+    background: transparent;
+    color: #cfcfcf;
+    font: inherit;
+    text-align: left;
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .choices button.on { background: #2a2a2a; color: #f3f3f3; }
+  #speed {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  #speed button {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    text-align: center;
+    font-size: 20px;
+  }
+  #speed-value { font-variant-numeric: tabular-nums; font-weight: 650; }
+  #hits {
+    flex: 1;
+    min-height: 0;
+    margin: 8px 0 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+  }
+  #hits::-webkit-scrollbar { display: none; }
+  #hits button {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    text-align: left;
+    background: transparent;
+    color: inherit;
+    border: 0;
+    border-bottom: 1px solid #242424;
+    padding: 12px 2px;
+    font: inherit;
+  }
+  #hits .hit-title { font-weight: 650; }
+  #hits .hit-artist { color: #9a9a9a; font-size: 14px; }
+  #hits .note { color: #9a9a9a; padding: 18px 2px; margin: 0; }
+  #player {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #cover-slot {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 10px 0 6px;
+  }
+  #cover-wrap {
+    height: 100%;
+    max-height: 100%;
+    aspect-ratio: 1;
+    max-width: 100%;
+    border-radius: 18px;
+    background: linear-gradient(160deg, #2a2a2a, #161616);
+    overflow: hidden;
+  }
+  #cover { width: 100%; height: 100%; object-fit: cover; display: none; }
+  #cover.on { display: block; }
+  #title {
+    margin: 4px 0 0;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #artist, #album {
+    margin: 2px 0 0;
+    color: #9a9a9a;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #album { font-size: 14px; }
+  #album:empty { display: none; }
+  #seek { margin-top: 12px; flex: none; }
+  #times {
+    display: flex;
+    justify-content: space-between;
+    color: #8d8d8d;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    margin-top: 6px;
+    flex: none;
+  }
+  #transport {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    margin-top: 6px;
+    flex: none;
+  }
+  button.icon {
+    background: transparent;
+    color: #cfcfcf;
+    border: 0;
+    padding: 8px;
+  }
+  #play {
+    width: 64px;
+    height: 64px;
+    border: 0;
+    border-radius: 50%;
+    background: #f3f3f3;
+    color: #111;
+    display: grid;
+    place-items: center;
+  }
+  #play .icon-pause { display: none; }
+  #play.is-on .icon-play { display: none; }
+  #play.is-on .icon-pause { display: block; }
+  #vol-row { margin-top: 12px; flex: none; }
+  #vol-label {
+    display: flex;
+    justify-content: space-between;
+    color: #8d8d8d;
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 99px;
+    background: #2c2c2c;
+    margin: 0;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #f3f3f3;
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div id="top">
+    <button id="gear" type="button" aria-label="Playback settings" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M19.4 13.5a7.7 7.7 0 0 0 .1-1.5 7.7 7.7 0 0 0-.1-1.5l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-2.6-1.5L14 2h-4l-.4 2.5a7.4 7.4 0 0 0-2.6 1.5l-2.4-1-2 3.4 2 1.6a7.7 7.7 0 0 0-.1 1.5 7.7 7.7 0 0 0 .1 1.5l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 2.6 1.5L10 22h4l.4-2.5a7.4 7.4 0 0 0 2.6-1.5l2.4 1 2-3.4-2-1.6zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"/></svg>
+    </button>
+    <input id="q" type="search" placeholder="Search library" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" aria-label="Search library">
+    <button id="shuffle" type="button" aria-pressed="false">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+      <span>Shuffle</span>
+    </button>
+    <div id="menu" hidden>
+      <p>Repeat</p>
+      <div class="choices" id="repeat">
+        <button type="button" data-mode="off">Don't repeat</button>
+        <button type="button" data-mode="all">Repeat the queue</button>
+        <button type="button" data-mode="one">Repeat this song</button>
+      </div>
+      <p>Speed</p>
+      <div id="speed">
+        <button id="slower" type="button" aria-label="Slower">−</button>
+        <span id="speed-value">1.00×</span>
+        <button id="faster" type="button" aria-label="Faster">+</button>
+      </div>
+    </div>
+  </div>
+  <div id="hits" hidden></div>
+  <div id="player">
+    <div id="cover-slot"><div id="cover-wrap"><img id="cover" alt=""></div></div>
+    <h1 id="title">Nothing playing</h1>
+    <p id="artist"></p>
+    <p id="album"></p>
+    <input id="seek" type="range" min="0" max="0" value="0" aria-label="Position">
+    <div id="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+    <div id="transport">
+      <button id="prev" class="icon" type="button" aria-label="Previous">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M6 5h2v14H6zm3.5 7 8.5 6V6z"/></svg>
+      </button>
+      <button id="play" type="button" aria-label="Play">
+        <svg class="icon-play" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path fill="currentColor" d="M9 5.5v13l10-6.5z"/></svg>
+        <svg class="icon-pause" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path fill="currentColor" d="M6 5h4.2v14H6zm7.8 0H18v14h-4.2z"/></svg>
+      </button>
+      <button id="next" class="icon" type="button" aria-label="Next">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M16 5h2v14h-2zM6 6l8.5 6L6 18z"/></svg>
+      </button>
+    </div>
+    <div id="vol-row">
+      <div id="vol-label"><span>Volume</span><span id="muted" hidden>Muted</span></div>
+      <input id="vol" type="range" min="0" max="100" value="85" aria-label="Volume">
+    </div>
+  </div>
+</main>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var code = params.get("code") || "";
+  var q = document.getElementById("q");
+  var hits = document.getElementById("hits");
+  var player = document.getElementById("player");
+  var cover = document.getElementById("cover");
+  var title = document.getElementById("title");
+  var artist = document.getElementById("artist");
+  var album = document.getElementById("album");
+  var seek = document.getElementById("seek");
+  var pos = document.getElementById("pos");
+  var dur = document.getElementById("dur");
+  var play = document.getElementById("play");
+  var shuffle = document.getElementById("shuffle");
+  var gear = document.getElementById("gear");
+  var menu = document.getElementById("menu");
+  var speedValue = document.getElementById("speed-value");
+  var vol = document.getElementById("vol");
+  var muted = document.getElementById("muted");
+  var dragSeek = false;
+  var dragVol = false;
+  var timer = 0;
+  var speed = 1;
+
+  function fmt(ms) {
+    ms = Math.max(0, Math.floor(Number(ms) || 0));
+    var total = Math.floor(ms / 1000);
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    var s = total % 60;
+    var sec = String(s).padStart(2, "0");
+    if (h > 0) return h + ":" + String(m).padStart(2, "0") + ":" + sec;
+    return m + ":" + sec;
+  }
+
+  function fmtSpeed(value) {
+    return (Math.round(value * 100) / 100).toFixed(2) + "×";
+  }
+
+  function apply(state) {
+    title.textContent = state.title || "Nothing playing";
+    artist.textContent = state.artist || "";
+    album.textContent = state.album || "";
+    if (!dragSeek) {
+      seek.max = String(state.durationMs || 0);
+      seek.value = String(Math.min(state.positionMs || 0, state.durationMs || 0));
+      pos.textContent = fmt(state.positionMs);
+    }
+    dur.textContent = fmt(state.durationMs);
+    var playing = !!state.playing;
+    play.classList.toggle("is-on", playing);
+    play.setAttribute("aria-label", playing ? "Pause" : "Play");
+    shuffle.classList.toggle("on", !!state.shuffle);
+    shuffle.setAttribute("aria-pressed", state.shuffle ? "true" : "false");
+    var mode = state.repeat || "off";
+    var choices = menu.querySelectorAll("[data-mode]");
+    for (var i = 0; i < choices.length; i++) {
+      choices[i].classList.toggle("on", choices[i].dataset.mode === mode);
+    }
+    speed = Number(state.speed);
+    if (!isFinite(speed)) speed = 1;
+    speedValue.textContent = fmtSpeed(speed);
+    if (!dragVol) vol.value = String(Math.round((state.volume || 0) * 100));
+    muted.hidden = !state.muted;
+    if (state.artRev) {
+      if (cover.dataset.rev !== String(state.artRev)) {
+        cover.dataset.rev = String(state.artRev);
+        cover.src = "/art?code=" + encodeURIComponent(code) + "&v=" + state.artRev;
+      }
+      cover.classList.add("on");
+    } else {
+      cover.classList.remove("on");
+      cover.removeAttribute("src");
+      cover.dataset.rev = "";
+    }
+  }
+
+  function send(body) {
+    return fetch("/control?code=" + encodeURIComponent(code), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (res) {
+      if (!res.ok) return null;
+      return res.json();
+    }).then(function (state) {
+      if (state) apply(state);
+    }).catch(function () {});
+  }
+
+  function showPlayer() {
+    hits.hidden = true;
+    hits.replaceChildren();
+    player.hidden = false;
+  }
+
+  function note(text) {
+    var p = document.createElement("p");
+    p.className = "note";
+    p.textContent = text;
+    return p;
+  }
+
+  function renderHits(payload) {
+    hits.replaceChildren();
+    var rows = payload.hits || [];
+    if (payload.indexing && rows.length === 0) {
+      hits.append(note("Reading the library…"));
+      return;
+    }
+    if (rows.length === 0) {
+      hits.append(note("No songs match."));
+      return;
+    }
+    rows.forEach(function (hit) {
+      var button = document.createElement("button");
+      button.type = "button";
+      var name = document.createElement("span");
+      name.className = "hit-title";
+      name.textContent = hit.title || "Untitled";
+      var who = document.createElement("span");
+      who.className = "hit-artist";
+      who.textContent = hit.artist || "";
+      button.append(name, who);
+      button.addEventListener("click", function () {
+        q.value = "";
+        showPlayer();
+        send({ op: "play", id: hit.id });
+      });
+      hits.append(button);
+    });
+  }
+
+  function runSearch() {
+    var query = q.value.trim();
+    if (!query) {
+      showPlayer();
+      return;
+    }
+    player.hidden = true;
+    hits.hidden = false;
+    menu.hidden = true;
+    gear.setAttribute("aria-expanded", "false");
+    fetch("/search?code=" + encodeURIComponent(code) + "&q=" + encodeURIComponent(query))
+      .then(function (res) { return res.ok ? res.json() : { hits: [] }; })
+      .then(renderHits)
+      .catch(function () { renderHits({ hits: [] }); });
+  }
+
+  function setMenu(open) {
+    menu.hidden = !open;
+    gear.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function bumpSpeed(delta) {
+    var next = Math.round((speed + delta) * 100) / 100;
+    if (next < 0.5) next = 0.5;
+    if (next > 2) next = 2;
+    speed = next;
+    speedValue.textContent = fmtSpeed(speed);
+    send({ op: "speed", speed: next });
+  }
+
+  q.addEventListener("input", function () {
+    clearTimeout(timer);
+    timer = setTimeout(runSearch, 160);
+  });
+  q.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") event.preventDefault();
+  });
+  gear.addEventListener("click", function () {
+    setMenu(menu.hidden);
+  });
+  document.addEventListener("pointerdown", function (event) {
+    if (menu.hidden) return;
+    if (gear.contains(event.target) || menu.contains(event.target)) return;
+    setMenu(false);
+  });
+  menu.querySelectorAll("[data-mode]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      send({ op: "repeat", repeat: button.dataset.mode });
+    });
+  });
+  document.getElementById("slower").addEventListener("click", function () { bumpSpeed(-0.05); });
+  document.getElementById("faster").addEventListener("click", function () { bumpSpeed(0.05); });
+  play.addEventListener("click", function () {
+    play.classList.toggle("is-on");
+    play.setAttribute("aria-label", play.classList.contains("is-on") ? "Pause" : "Play");
+    send({ op: "toggle" });
+  });
+  document.getElementById("prev").addEventListener("click", function () { send({ op: "previous" }); });
+  document.getElementById("next").addEventListener("click", function () { send({ op: "next" }); });
+  shuffle.addEventListener("click", function () {
+    send({ op: "shuffle", shuffle: shuffle.getAttribute("aria-pressed") !== "true" });
+  });
+  seek.addEventListener("pointerdown", function () { dragSeek = true; });
+  seek.addEventListener("pointerup", function () { dragSeek = false; });
+  seek.addEventListener("pointercancel", function () { dragSeek = false; });
+  seek.addEventListener("input", function () { pos.textContent = fmt(seek.value); });
+  seek.addEventListener("change", function () {
+    dragSeek = false;
+    send({ op: "seek", positionMs: Number(seek.value) });
+  });
+  vol.addEventListener("pointerdown", function () { dragVol = true; });
+  vol.addEventListener("pointerup", function () { dragVol = false; });
+  vol.addEventListener("change", function () {
+    dragVol = false;
+    send({ op: "volume", volume: Number(vol.value) / 100 });
+  });
+
+  if (!code) {
+    title.textContent = "Open the link from Audios!";
+    return;
+  }
+  var events = new EventSource("/events?code=" + encodeURIComponent(code));
+  events.onmessage = function (event) {
+    try { apply(JSON.parse(event.data)); } catch (e) {}
+  };
+})();
+</script>
+</body>
+</html>

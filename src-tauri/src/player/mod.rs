@@ -63,6 +63,24 @@ pub struct Tick {
     pub duration_ms: u64,
 }
 
+/// Now-playing fields for a remote. Not sent to the desktop webview.
+#[derive(Debug, Clone)]
+pub struct Transport {
+    pub title: String,
+    pub artist: String,
+    pub album_artist: String,
+    pub album: String,
+    pub path: String,
+    pub playing: bool,
+    pub position_ms: u64,
+    pub duration_ms: u64,
+    pub volume: f64,
+    pub muted: bool,
+    pub repeat: RepeatMode,
+    pub shuffle: bool,
+    pub speed: f64,
+}
+
 struct Logic {
     queue: Queue,
     volume: f64,
@@ -320,6 +338,54 @@ impl Player {
             }
         }
         self.open_path(path)
+    }
+
+    /// Play a library file. If it is already queued, keep that queue.
+    /// Otherwise queue the other songs in the same folder, capped so a
+    /// huge directory does not become the whole queue.
+    pub fn play_folder_file(&self, path: &str) -> AppResult<PlayerSnapshot> {
+        if !Path::new(path).is_file() {
+            return Err(AppError::msg("That song is missing"));
+        }
+        let queued = {
+            let logic = self.logic.lock().expect("player lock");
+            logic.queue.tracks.iter().any(|track| track.path == path)
+        };
+        if queued {
+            return self.play_path(path);
+        }
+        let tracks = folder_tracks(Path::new(path));
+        let tracks = if tracks.iter().any(|track| track.path == path) {
+            tracks
+        } else {
+            vec![track_from_path(Path::new(path))]
+        };
+        self.play_tracks(tracks, Some(path.to_string()))
+    }
+
+    /// Fields the web remote renders. Skips the queue, folder tree, and EQ.
+    pub fn transport(&self) -> Transport {
+        let logic = self.logic.lock().expect("player lock");
+        let current = logic.queue.current();
+        Transport {
+            title: current.map(|track| track.title.clone()).unwrap_or_default(),
+            artist: current
+                .map(|track| track.artist.clone())
+                .unwrap_or_default(),
+            album_artist: current
+                .map(|track| track.album_artist.clone())
+                .unwrap_or_default(),
+            album: current.map(|track| track.album.clone()).unwrap_or_default(),
+            path: current.map(|track| track.path.clone()).unwrap_or_default(),
+            playing: self.engine.is_playing(),
+            position_ms: self.engine.position_ms(),
+            duration_ms: self.current_duration(&logic),
+            volume: logic.volume,
+            muted: logic.muted,
+            repeat: logic.queue.repeat,
+            shuffle: logic.queue.shuffle,
+            speed: logic.speed,
+        }
     }
 
     pub fn play_queue_paths(
@@ -743,6 +809,34 @@ impl Player {
     }
 }
 
+/// Songs sitting next to `file`. Above the cap, return just that file so
+/// one enormous folder does not all land in the queue.
+fn folder_tracks(file: &Path) -> Vec<Track> {
+    const CAP: usize = 2_000;
+    let Some(parent) = file.parent() else {
+        return vec![track_from_path(file)];
+    };
+    let Ok(dir) = std::fs::read_dir(parent) else {
+        return vec![track_from_path(file)];
+    };
+    let mut paths = Vec::new();
+    for entry in dir.flatten() {
+        let candidate = entry.path();
+        if candidate.is_file() && scan::is_audio_path(&candidate) {
+            paths.push(candidate);
+            if paths.len() > CAP {
+                return vec![track_from_path(file)];
+            }
+        }
+    }
+    if paths.is_empty() {
+        return vec![track_from_path(file)];
+    }
+    let mut tracks: Vec<Track> = paths.iter().map(|path| track_from_path(path)).collect();
+    scan::sort_tracks(&mut tracks);
+    tracks
+}
+
 #[cfg(test)]
 mod tests {
     use super::clamp_speed;
@@ -754,5 +848,16 @@ mod tests {
         assert_eq!(clamp_speed(3.0), 2.0);
         assert_eq!(clamp_speed(f64::NAN), 1.0);
         assert_eq!(clamp_speed(1.256), 1.26);
+    }
+
+    #[test]
+    fn folder_tracks_skip_non_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.mp3"), []).unwrap();
+        std::fs::write(dir.path().join("b.flac"), []).unwrap();
+        std::fs::write(dir.path().join("notes.txt"), []).unwrap();
+        let tracks = super::folder_tracks(&dir.path().join("b.flac"));
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks.iter().all(|track| !track.path.ends_with(".txt")));
     }
 }
