@@ -32,7 +32,6 @@ export default tseslint.config(
       // Tauri command errors arrive as strings; `void promise` is the accepted
       // fire-and-forget idiom in this codebase.
       "@typescript-eslint/no-floating-promises": "off",
-      // Icon-only buttons carry `title`; a11y labelling is tracked in Phase 4.
       "jsx-a11y/no-autofocus": "off",
       // Labels here wrap a <span> block of text plus the control.
       "jsx-a11y/label-has-associated-control": ["error", { assert: "either", depth: 4 }],

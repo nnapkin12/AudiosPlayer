@@ -1121,51 +1121,6 @@ mod tests {
         assert!(!error.to_ascii_lowercase().contains("moov"), "{error}");
     }
 
-    #[test]
-    fn extended_mdat_file_round_trips_tags_without_touching_audio() {
-        let src =
-            Path::new("/home/napkin/Music/Music/no name playlist/FULLYCHOP - RAPPER RUNTZ.m4a");
-        if !src.is_file() {
-            return;
-        }
-        let original = std::fs::read(src).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("song.m4a");
-        std::fs::write(&path, &original).unwrap();
-        let path_str = path.to_str().unwrap();
-        let before = read_tags(path_str).expect("read");
-        let mut fields = before.fields.clone();
-        fields.title = Some("Recovered title".into());
-        let saved = write_tags(path_str, fields).expect("write");
-        assert_eq!(saved.fields.title.as_deref(), Some("Recovered title"));
-        let again = read_tags(path_str).expect("reread");
-        assert_eq!(again.fields.title.as_deref(), Some("Recovered title"));
-        assert_eq!(again.fields.artists, before.fields.artists);
-        let written = std::fs::read(&path).unwrap();
-        let audio = mdat_payload(&original);
-        let audio_after = mdat_payload(&written);
-        assert_eq!(audio, audio_after);
-    }
-
-    fn mdat_payload(data: &[u8]) -> &[u8] {
-        let mut pos = 0;
-        while pos + 8 <= data.len() {
-            let size32 = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap());
-            let kind = &data[pos + 4..pos + 8];
-            let (size, header) = if size32 == 1 {
-                let size = u64::from_be_bytes(data[pos + 8..pos + 16].try_into().unwrap()) as usize;
-                (size, 16)
-            } else {
-                (size32 as usize, 8)
-            };
-            if kind == b"mdat" {
-                return &data[pos + header..pos + size];
-            }
-            pos += size;
-        }
-        panic!("mdat missing");
-    }
-
     fn extended_mdat_bytes() -> Vec<u8> {
         fn atom(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
             let mut out = Vec::new();
