@@ -67,6 +67,11 @@ pub fn play_path(player: State<Player>, path: String) -> AppResult<PlayerSnapsho
 }
 
 #[tauri::command]
+pub fn enqueue_path(player: State<Player>, path: String) -> AppResult<PlayerSnapshot> {
+    player.enqueue_path(&path)
+}
+
+#[tauri::command]
 pub fn play_playlist(
     player: State<Player>,
     store: State<Store>,
@@ -352,6 +357,14 @@ pub struct Appearance {
     pub custom_themes: Vec<CustomTheme>,
     #[serde(default)]
     pub minimize_movement: bool,
+    #[serde(default)]
+    pub visualizer: bool,
+    #[serde(default = "crate::persist::default_viz_main")]
+    pub visualizer_main: String,
+    #[serde(default = "crate::persist::default_viz_border")]
+    pub visualizer_border: String,
+    #[serde(default = "crate::persist::default_viz_glow")]
+    pub visualizer_glow: String,
 }
 
 fn appearance_from(store: &Store) -> Appearance {
@@ -361,6 +374,10 @@ fn appearance_from(store: &Store) -> Appearance {
         accent: data.accent,
         custom_themes: data.custom_themes,
         minimize_movement: data.minimize_movement,
+        visualizer: data.visualizer,
+        visualizer_main: data.visualizer_main,
+        visualizer_border: data.visualizer_border,
+        visualizer_glow: data.visualizer_glow,
     }
 }
 
@@ -381,6 +398,28 @@ pub fn set_appearance(store: State<Store>, theme: String, accent: String) -> App
 #[tauri::command]
 pub fn set_minimize_movement(store: State<Store>, enabled: bool) -> Appearance {
     store.update(|data| data.minimize_movement = enabled);
+    appearance_from(&store)
+}
+
+#[tauri::command]
+pub fn set_visualizer(
+    store: State<Store>,
+    player: State<Player>,
+    enabled: bool,
+    main: String,
+    border: String,
+    glow: String,
+) -> Appearance {
+    let main = crate::persist::hex_color(&main, &store.snapshot().visualizer_main);
+    let border = crate::persist::hex_color(&border, &store.snapshot().visualizer_border);
+    let glow = crate::persist::hex_color(&glow, &store.snapshot().visualizer_glow);
+    store.update(|data| {
+        data.visualizer = enabled;
+        data.visualizer_main = main;
+        data.visualizer_border = border;
+        data.visualizer_glow = glow;
+    });
+    player.set_viz_enabled(enabled);
     appearance_from(&store)
 }
 

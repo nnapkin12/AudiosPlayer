@@ -259,9 +259,28 @@ input[type="range"]::-webkit-slider-thumb {
   width: min(100%, 920px);
 }
 
+.np-stage-viz {
+  width: min(100%, 1180px);
+}
+
 .np-cover {
   width: min(46vh, 68vw, 520px);
   animation: np-cover 280ms ease-out;
+}
+
+.viz-bar {
+  height: 48px;
+  width: clamp(6.5rem, 12vw, 14rem);
+  max-width: 38%;
+  min-width: 0;
+  flex: none;
+}
+
+.viz-stage {
+  width: min(24vw, 260px);
+  min-width: 96px;
+  height: min(46vh, 68vw, 520px);
+  flex: none;
 }
 
 .np-copy {

@@ -31,6 +31,7 @@ export default function App() {
   const hasTrack = useAppStore((state) => Boolean(state.snapshot?.current));
   const setAppearance = useAppStore((state) => state.setAppearance);
   const setMinimizeMovement = useAppStore((state) => state.setMinimizeMovement);
+  const setVisualizer = useAppStore((state) => state.setVisualizer);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -58,6 +59,12 @@ export default function App() {
         useAppStore.getState().setMissing(missing);
         setAppearance(appearance.theme, appearance.accent, appearance.customThemes ?? []);
         setMinimizeMovement(appearance.minimizeMovement ?? false);
+        setVisualizer({
+          enabled: appearance.visualizer ?? false,
+          main: appearance.visualizerMain ?? "#8ec8ff",
+          border: appearance.visualizerBorder ?? "#e8f3ff",
+          glow: appearance.visualizerGlow ?? "#4aa3ff",
+        });
       } catch (error) {
         if (!disposed) {
           applyAppearance("dusk", "blue");
@@ -133,7 +140,7 @@ export default function App() {
       stop.forEach((fn) => fn());
       window.removeEventListener("keydown", onKey);
     };
-  }, [applySnapshot, applyTick, bumpLibrary, setAppearance, setLibraryRoots, setMinimizeMovement, setNowPlayingOpen, setPlaylists, setStatus]);
+  }, [applySnapshot, applyTick, bumpLibrary, setAppearance, setLibraryRoots, setMinimizeMovement, setNowPlayingOpen, setPlaylists, setStatus, setVisualizer]);
 
   return (
     <div className="app-frame relative flex h-full flex-col overflow-hidden bg-app">

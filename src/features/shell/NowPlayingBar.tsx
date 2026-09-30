@@ -12,6 +12,7 @@ import {
 import { PlayPauseIcon } from "@/features/shell/PlayPauseIcon";
 import { TransportSeek } from "@/features/shell/SeekBar";
 import { SpeedControl } from "@/features/shell/SpeedControl";
+import { Visualizer } from "@/features/shell/Visualizer";
 import { api } from "@/lib/api";
 import { CoverThumb } from "@/lib/covers";
 import { displayArtist, displayTitle } from "@/lib/format";
@@ -27,13 +28,15 @@ export function NowPlayingBar() {
   const muted = snapshot?.muted ?? false;
   const repeat = snapshot?.repeat ?? "off";
   const shuffle = snapshot?.shuffle ?? false;
+  const visualizer = useAppStore((state) => state.visualizer);
 
   return (
     <footer className="now-playing-bar relative z-10 h-[92px] shrink-0 items-center gap-4 border-t border-app-bar-line bg-app-bar px-4 shadow-[inset_0_1px_0_rgb(255_255_255_/_0.06)]">
+      <div className="flex min-w-0 items-center gap-3">
       <button
         type="button"
         onClick={() => setNowPlayingOpen(true)}
-        className="flex min-w-0 items-center gap-3 text-left"
+        className="flex min-w-0 max-w-[16rem] items-center gap-3 text-left"
       >
         <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md bg-app-hover">
           {current ? (
@@ -51,54 +54,15 @@ export function NowPlayingBar() {
           </p>
         </div>
       </button>
+      {visualizer ? <Visualizer variant="bar" /> : null}
+      </div>
 
       <div className="flex min-w-0 flex-col items-center gap-1.5">
         <div className="relative flex items-center justify-center">
           <div className="absolute right-full mr-2">
             <SpeedControl />
           </div>
-          <div className="flex items-center gap-2">
-          <IconButton
-            label="Shuffle"
-            active={shuffle}
-            onClick={() => void api.setShuffle(!shuffle).catch(() => undefined)}
-          >
-            <Shuffle key={String(shuffle)} size={15} className="t-pop" />
-          </IconButton>
-          <IconButton
-            label="Previous"
-            nudge="prev"
-            onClick={() => void api.previous().catch(() => undefined)}
-          >
-            <SkipBack size={16} />
-          </IconButton>
-          <button
-            type="button"
-            title={playing ? "Pause" : "Play"}
-            onClick={() => void api.toggle().catch(() => undefined)}
-            className="t-btn flex h-10 w-10 items-center justify-center rounded-full bg-app-play text-app-play-fg"
-          >
-            <PlayPauseIcon playing={playing} size={16} />
-          </button>
-          <IconButton
-            label="Next"
-            nudge="next"
-            onClick={() => void api.next().catch(() => undefined)}
-          >
-            <SkipForward size={16} />
-          </IconButton>
-          <IconButton
-            label="Repeat"
-            active={repeat !== "off"}
-            onClick={() => void api.setRepeat(nextRepeat(repeat)).catch(() => undefined)}
-          >
-            {repeat === "one" ? (
-              <Repeat1 key="one" size={15} className="t-pop" />
-            ) : (
-              <Repeat key={repeat} size={15} className="t-pop" />
-            )}
-          </IconButton>
-          </div>
+          <BarTransport shuffle={shuffle} repeat={repeat} playing={playing} />
         </div>
         <TransportSeek
           tone="bar"
@@ -130,6 +94,61 @@ export function NowPlayingBar() {
         </IconButton>
       </div>
     </footer>
+  );
+}
+
+function BarTransport({
+  shuffle,
+  repeat,
+  playing,
+}: {
+  shuffle: boolean;
+  repeat: RepeatMode;
+  playing: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-center gap-2">
+      <IconButton
+        label="Shuffle"
+        active={shuffle}
+        onClick={() => void api.setShuffle(!shuffle).catch(() => undefined)}
+      >
+        <Shuffle key={String(shuffle)} size={15} className="t-pop" />
+      </IconButton>
+      <IconButton
+        label="Previous"
+        nudge="prev"
+        onClick={() => void api.previous().catch(() => undefined)}
+      >
+        <SkipBack size={16} />
+      </IconButton>
+      <button
+        type="button"
+        title={playing ? "Pause" : "Play"}
+        onClick={() => void api.toggle().catch(() => undefined)}
+        className="t-btn flex h-10 w-10 items-center justify-center rounded-full bg-app-play text-app-play-fg"
+      >
+        <PlayPauseIcon playing={playing} size={16} />
+      </button>
+      <IconButton
+        label="Next"
+        nudge="next"
+        onClick={() => void api.next().catch(() => undefined)}
+      >
+        <SkipForward size={16} />
+      </IconButton>
+      <IconButton
+        label="Repeat"
+        active={repeat !== "off"}
+        onClick={() => void api.setRepeat(nextRepeat(repeat)).catch(() => undefined)}
+      >
+        {repeat === "one" ? (
+          <Repeat1 key="one" size={15} className="t-pop" />
+        ) : (
+          <Repeat key={repeat} size={15} className="t-pop" />
+        )}
+      </IconButton>
+    </div>
   );
 }
 

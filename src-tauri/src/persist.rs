@@ -51,6 +51,14 @@ pub struct PersistData {
     #[serde(default)]
     pub minimize_movement: bool,
     #[serde(default)]
+    pub visualizer: bool,
+    #[serde(default = "default_viz_main")]
+    pub visualizer_main: String,
+    #[serde(default = "default_viz_border")]
+    pub visualizer_border: String,
+    #[serde(default = "default_viz_glow")]
+    pub visualizer_glow: String,
+    #[serde(default)]
     pub eq: EqPersist,
 }
 
@@ -95,6 +103,29 @@ fn default_speed() -> f64 {
     1.0
 }
 
+pub fn default_viz_main() -> String {
+    "#8ec8ff".into()
+}
+
+pub fn default_viz_border() -> String {
+    "#e8f3ff".into()
+}
+
+pub fn default_viz_glow() -> String {
+    "#4aa3ff".into()
+}
+
+pub fn hex_color(value: &str, fallback: &str) -> String {
+    let value = value.trim();
+    if value.len() == 7
+        && value.starts_with('#')
+        && value[1..].chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return value.to_ascii_lowercase();
+    }
+    fallback.into()
+}
+
 impl Default for PersistData {
     fn default() -> Self {
         Self {
@@ -113,6 +144,10 @@ impl Default for PersistData {
             accent: default_accent(),
             custom_themes: Vec::new(),
             minimize_movement: false,
+            visualizer: false,
+            visualizer_main: default_viz_main(),
+            visualizer_border: default_viz_border(),
+            visualizer_glow: default_viz_glow(),
             eq: EqPersist::default(),
         }
     }
@@ -244,6 +279,8 @@ mod tests {
         assert_eq!(data.theme, "dusk");
         assert!(data.custom_themes.is_empty());
         assert!(!data.minimize_movement);
+        assert!(!data.visualizer);
+        assert_eq!(data.visualizer_main, default_viz_main());
         assert!(!data.eq.enabled);
         assert_eq!(data.eq.bands.len(), 10);
     }

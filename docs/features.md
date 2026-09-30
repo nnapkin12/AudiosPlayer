@@ -16,10 +16,12 @@ Scanned audio is mp3, flac, ogg, opus, m4a, mp4, aac, wav, aiff, wma, wavpack, a
 
 ## Playlists
 
-- Press + to create one. Add a file or a folder.
+- Press + to create one. Leave the name empty and it is called New playlist #1, then #2, and so on. An older Playlist 1 name counts as that same number, so the next blank name is the first number that is free.
+- Add a file or a folder. Right-click a song or album and choose Add to playlist. New playlist creates the next default name and adds what you clicked. That list shows five playlists, then scrolls, and opens on the side that stays inside the window.
 - A folder stays linked, so songs added or removed on disk show up in that playlist.
 - Set a picture from a local image. With no picture, Audios! builds a 2×2 mosaic from up to four embedded covers.
-- An open playlist, artist, or album shows that cover as a small square above the name, so more songs stay on screen.
+- An open playlist, artist, or album shows that cover as a square above the name. The playlist cover is one and a half times the old small square, with the space around it tightened so the song list still fills the window.
+- An open playlist can be renamed, given a picture, or removed with Remove playlist.
 
 ## Discover
 
@@ -28,7 +30,9 @@ Scanned audio is mp3, flac, ogg, opus, m4a, mp4, aac, wav, aiff, wma, wavpack, a
 
 ## Playback
 
-- Queue with next and previous. Repeat is off, one song, or the whole queue. Shuffle is separate.
+- Queue with next and previous. Repeat is off, one song, or the whole context. Shuffle is separate and only reshuffles that context.
+- Add to queue, from the song menu, puts that song in a list that plays before the current playlist or folder moves on. The playlist itself is left as it is, including its place. Playback keeps going, including while paused. If nothing is loaded, the song starts. The same song can be added more than once. When the added list runs out, the next song is the one after the place you left in the playlist or folder. Playing a song, playlist, or folder replaces that context and clears the added list.
+- A search inside a playlist, folder, artist, or album only hides rows. Playing a visible row starts that song and keeps the full list, so next and previous walk the list you opened, not the search hits.
 - Gapless playback is a switch under Settings → Playback. The next song is ready before the current one ends.
 - ReplayGain, on the same page, uses track or album tags when they exist.
 - Speed runs from 0.5× to 2×. Pitch moves with the tempo. The speed button sits beside the transport so play stays centered. Open it to step by 0.05 or type a number. The chosen speed is remembered.
@@ -54,7 +58,9 @@ Settings → Remote, labeled Audios! web. **Start web remote** listens on the ho
 
 - The panel shows the link, a pairing code, a QR code, and any other LAN addresses. Copy puts the link on the clipboard.
 - While the library is being read, the panel says so. After that it shows how many songs were indexed.
-- The phone page has the cover, play and pause, seek, shuffle, volume, and a search of songs already in the library. A gear holds repeat and playback speed. That speed is the same control as the desktop.
+- The page fills the phone. On a wide window it uses the width of the browser, and the cover stays at most 420px.
+- Two tabs. Player has the cover, play and pause, seek, shuffle, volume, and a search of songs already in the library. A gear holds repeat and playback speed. That speed is the same control as the desktop. Playlists lists every playlist. Open one and tap a song: that song plays on the computer, and the rest of the playlist follows it.
+- On Playlists, a seek bar and previous, play, and next sit at the bottom. They slide away on Player, where those controls are already large. A browser that asks for less motion shows and hides that bar without the slide.
 - Phones that connect are listed as connected or last seen.
 - **Stop web remote** closes the page. If a phone cannot open the link, allow the port in the firewall.
 
@@ -86,6 +92,7 @@ Settings → Appearance.
 - Themes: Dusk, Midnight, Slate, Paper.
 - Accents: Blue, Amber, Sage, Rose, Violet.
 - Minimize movement turns down UI animation. The choice is stored in `state.json`.
+- Audio Visualizer is off until you turn it on. Main, Border, and Glow set the bars. They sit in the now-playing bar between the song and the speed control, and in the full view they sit to the right of the album art at the same height. Off, paused, or a hidden window does not keep a draw loop running.
 - The theme builder starts with grouped colors. Advanced edits each token. Name it and save. Custom themes live in `state.json`.
 
 ## Window

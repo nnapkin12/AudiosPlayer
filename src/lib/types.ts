@@ -33,6 +33,10 @@ export interface Appearance {
   accent: string;
   customThemes: CustomTheme[];
   minimizeMovement?: boolean;
+  visualizer?: boolean;
+  visualizerMain?: string;
+  visualizerBorder?: string;
+  visualizerGlow?: string;
 }
 
 export interface MediaHit {

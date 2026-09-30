@@ -98,9 +98,11 @@ Every request must carry the pairing code. A miss is a 404. Routes:
 | GET | `/events` | Server-sent now-playing. Queue, folder tree, and EQ are not on this payload |
 | GET | `/art` | One JPEG from `cover_for`, and only while a phone is connected |
 | GET | `/search` | Filter the in-memory index. Returns ids, not paths |
-| POST | `/control` | toggle, next, previous, seek, volume, shuffle, repeat, speed, or play-by-id |
+| GET | `/playlists` | Playlist id, name, and song count. No paths |
+| GET | `/playlist` | One playlist’s songs as index, title, and artist. No paths |
+| POST | `/control` | toggle, next, previous, seek, volume, shuffle, repeat, speed, play-by-id, or playPlaylist |
 
-The index is built from library roots and playlist songs when the remote starts, and cleared when it stops. Play looks up the id on the server, then calls `play_folder_file`. The phone never sends a filesystem path.
+The index is built from library roots and playlist songs when the remote starts, and cleared when it stops. Search play looks up the id on the server, then calls `play_folder_file`. `playPlaylist` looks up the playlist id and song index on the server, then calls `play_queue_paths` so the tapped song starts and the rest of that playlist follows. The phone never sends a filesystem path. `/playlists` and `/playlist` read the store and disk on each request, so a playlist created while the remote is running still shows up. Those responses use playlist ids and song indexes, not paths.
 
 ## Playback
 
@@ -118,7 +120,13 @@ Release builds use `panic = "unwind"` so `catch_unwind` around the decoder can t
 
 ## Queue order
 
-Tracks are sorted by folder, then disc, then track number, then path. Nested folders play album-to-album in that order. Leaving a song forgets its place. The next play starts at 0:00. Speed is remembered.
+Tracks in a playlist or folder are sorted by folder, then disc, then track number, then path. Nested folders play album-to-album in that order. That list is the playback context: the songs and the index of the one you started from.
+
+Add to queue does not append onto that list. Those songs sit in a separate queue and play first. Next, end of track, and gapless all look there before stepping the context index forward by one. Repeat one stays on the current song and does not take from the added queue. Repeat all wraps the context only after that queue is empty. Shuffle reshuffles the context only. Playing something new replaces the context and clears the added queue.
+
+Leaving a song forgets its place. The next play starts at 0:00. Speed is remembered.
+
+The visualizer, when Settings turns it on, reads a decimated copy of the samples already going through the equalizer. A 256-point magnitude transform runs about 30 times a second on its own thread and sends 32 levels to the webview. The canvas draws them. The decode callback does not run that transform, and it skips the copy entirely while the visualizer is off.
 
 ## Tag writes
 

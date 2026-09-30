@@ -412,6 +412,18 @@ function PlaylistCard({
   );
 }
 
+export async function addToNewPlaylist(paths: string[]) {
+  const created = await api.createPlaylist("");
+  useAppStore.getState().setPlaylists(created);
+  const playlist = created[created.length - 1];
+  if (!playlist) {
+    throw new Error("Could not create playlist");
+  }
+  const list = await api.addToPlaylist(playlist.id, paths);
+  useAppStore.getState().setPlaylists(list);
+  refreshPlaylist(playlist.id);
+}
+
 function folderMenu(
   path: string,
   removeRoot: (path: string) => Promise<void>,
@@ -464,6 +476,14 @@ function folderMenu(
     {
       kind: "submenu",
       label: "Add to playlist",
+      pinned: {
+        label: "New playlist",
+        onClick: () => {
+          void addToNewPlaylist([path]).catch((error) => {
+            setStatus(errorMessage(error, "Could not create playlist"));
+          });
+        },
+      },
       actions: playlists.map((playlist) => ({
         label: playlist.name,
         onClick: () => {

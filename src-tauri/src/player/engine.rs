@@ -97,6 +97,18 @@ impl RodioEngine {
             rate
         }
     }
+
+    pub fn set_viz_enabled(&self, enabled: bool) {
+        self.eq.set_viz_enabled(enabled);
+    }
+
+    pub fn viz_enabled(&self) -> bool {
+        self.eq.viz_enabled()
+    }
+
+    pub fn spectrum(&self) -> Option<[u8; crate::viz::BANDS]> {
+        self.eq.spectrum()
+    }
 }
 
 impl PlayerEngine for RodioEngine {

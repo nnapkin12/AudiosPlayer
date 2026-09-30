@@ -3,7 +3,8 @@
 //! Started from Settings. A pairing code is required on every request.
 //! The page is a static file, not the desktop React app. Library search
 //! uses an index that exists only while the remote is running. Commands
-//! play by index id, never by a path from the phone.
+//! play by index id. Playlist play uses a playlist id and a song index.
+//! The phone never sends a filesystem path.
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -204,6 +205,37 @@ struct Control {
     repeat: Option<RepeatMode>,
     speed: Option<f64>,
     id: Option<u32>,
+    playlist_id: Option<String>,
+    index: Option<usize>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemotePlaylist {
+    id: String,
+    name: String,
+    count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaylistListBody {
+    playlists: Vec<RemotePlaylist>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteSong {
+    index: usize,
+    title: String,
+    artist: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaylistSongsBody {
+    name: String,
+    songs: Vec<RemoteSong>,
 }
 
 #[derive(Serialize)]
@@ -831,13 +863,18 @@ fn handle_client(mut stream: TcpStream, addr: SocketAddr, shared: &Shared) {
         ("GET", "/search") => {
             let query = query_value(&request, "q").unwrap_or("");
             let body = shared.catalog.search(query);
-            match serde_json::to_string(&body) {
-                Ok(json) => write_text(&mut stream, "200 OK", "application/json", &json),
-                Err(_) => write_text(
+            write_json(&mut stream, &body)
+        }
+        ("GET", "/playlists") => write_json(&mut stream, &playlist_list_body(&shared.store)),
+        ("GET", "/playlist") => {
+            let id = query_value(&request, "id").unwrap_or("");
+            match playlist_songs_body(&shared.store, id) {
+                Some(body) => write_json(&mut stream, &body),
+                None => write_text(
                     &mut stream,
-                    "500 Internal Server Error",
+                    "404 Not Found",
                     "text/plain; charset=utf-8",
-                    "Could not search",
+                    "Not found",
                 ),
             }
         }
@@ -989,6 +1026,23 @@ fn apply_control(shared: &Shared, body: &[u8]) -> AppResult<WireNow> {
                 .ok_or_else(|| AppError::msg("That song is not in the library"))?;
             shared.player.play_folder_file(&path)?;
         }
+        "playPlaylist" => {
+            let playlist_id = control
+                .playlist_id
+                .ok_or_else(|| AppError::msg("Missing playlist"))?;
+            let index = control.index.ok_or_else(|| AppError::msg("Missing song"))?;
+            let playlists = crate::playlists::list(&shared.store);
+            let playlist = playlists
+                .iter()
+                .find(|playlist| playlist.id == playlist_id)
+                .ok_or_else(|| AppError::msg("playlist not found"))?;
+            let paths = crate::playlists::flatten_paths(playlist);
+            let start = paths
+                .get(index)
+                .cloned()
+                .ok_or_else(|| AppError::msg("That song is not in the playlist"))?;
+            shared.player.play_queue_paths(paths, Some(start))?;
+        }
         _ => return Err(AppError::msg("Unknown control")),
     }
     Ok(shared.wire_now())
@@ -1071,6 +1125,72 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Request> {
 
 fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn write_json(stream: &mut TcpStream, body: &impl Serialize) -> std::io::Result<()> {
+    match serde_json::to_string(body) {
+        Ok(json) => write_text(stream, "200 OK", "application/json", &json),
+        Err(_) => write_text(
+            stream,
+            "500 Internal Server Error",
+            "text/plain; charset=utf-8",
+            "Could not answer",
+        ),
+    }
+}
+
+fn playlist_list_body(store: &Store) -> PlaylistListBody {
+    let playlists = crate::playlists::list(store);
+    PlaylistListBody {
+        playlists: playlists
+            .iter()
+            .map(|playlist| RemotePlaylist {
+                id: playlist.id.clone(),
+                name: playlist.name.clone(),
+                count: crate::playlists::flatten_paths(playlist).len(),
+            })
+            .collect(),
+    }
+}
+
+fn playlist_songs_body(store: &Store, id: &str) -> Option<PlaylistSongsBody> {
+    let playlists = crate::playlists::list(store);
+    let playlist = playlists.iter().find(|playlist| playlist.id == id)?;
+    let songs = crate::playlists::flatten_paths(playlist)
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let track = track_from_path(Path::new(&path));
+            let (title, artist) = song_label(&track);
+            RemoteSong {
+                index,
+                title,
+                artist,
+            }
+        })
+        .collect();
+    Some(PlaylistSongsBody {
+        name: playlist.name.clone(),
+        songs,
+    })
+}
+
+fn song_label(track: &Track) -> (String, String) {
+    let artist = if track.artist.is_empty() {
+        track.album_artist.clone()
+    } else {
+        track.artist.clone()
+    };
+    let title = if track.title.trim().is_empty() {
+        Path::new(&track.path)
+            .file_stem()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Untitled".into())
+    } else {
+        track.title.clone()
+    };
+    (title, artist)
 }
 
 fn query_value<'a>(request: &'a Request, key: &str) -> Option<&'a str> {
@@ -1419,6 +1539,27 @@ mod tests {
         assert!(PAGE.contains("Search library"));
         assert!(!PAGE.to_lowercase().contains("youtube"));
         assert!(!PAGE.contains("https://"));
+    }
+
+    #[test]
+    fn playlist_songs_omit_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::persist::Store::for_test(dir.path());
+        let file = dir.path().join("salt.mp3");
+        std::fs::write(&file, []).unwrap();
+        let playlists = crate::playlists::create(&store, "Night".into()).unwrap();
+        let id = playlists[0].id.clone();
+        crate::playlists::add_paths(&store, id.clone(), vec![file.to_string_lossy().into()])
+            .unwrap();
+        let list_json = serde_json::to_string(&playlist_list_body(&store)).unwrap();
+        assert!(list_json.contains("Night"));
+        assert!(!list_json.contains("salt.mp3"));
+        assert!(!list_json.contains("\"path\""));
+        let songs_json = serde_json::to_string(&playlist_songs_body(&store, &id).unwrap()).unwrap();
+        assert!(songs_json.contains("salt"));
+        assert!(!songs_json.contains("salt.mp3"));
+        assert!(!songs_json.contains("\"path\""));
+        assert!(playlist_songs_body(&store, "missing").is_none());
     }
 
     #[test]

@@ -14,6 +14,7 @@ mod relink;
 mod remote;
 mod search;
 mod tags;
+mod viz;
 mod watch;
 
 use persist::Store;
@@ -54,6 +55,7 @@ pub fn run() {
             commands::seek,
             commands::play_index,
             commands::play_path,
+            commands::enqueue_path,
             commands::play_queue_paths,
             commands::play_tracks,
             commands::play_playlist,
@@ -101,6 +103,7 @@ pub fn run() {
             commands::get_appearance,
             commands::set_appearance,
             commands::set_minimize_movement,
+            commands::set_visualizer,
             commands::save_custom_theme,
             commands::delete_custom_theme,
             commands::remote_status,

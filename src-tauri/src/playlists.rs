@@ -17,6 +17,37 @@ pub fn list(store: &Store) -> Vec<Playlist> {
         .collect()
 }
 
+fn next_default_name(playlists: &[Playlist]) -> String {
+    let mut used = std::collections::HashSet::new();
+    for playlist in playlists {
+        if let Some(number) = default_number(&playlist.name) {
+            used.insert(number);
+        }
+    }
+    let mut number = 1u32;
+    loop {
+        if !used.contains(&number) {
+            break;
+        }
+        number = match number.checked_add(1) {
+            Some(next) => next,
+            None => break,
+        };
+    }
+    format!("New playlist #{number}")
+}
+
+/// `New playlist #N` and the older `Playlist N` occupy the same number.
+fn default_number(name: &str) -> Option<u32> {
+    let rest = name
+        .strip_prefix("New playlist #")
+        .or_else(|| name.strip_prefix("Playlist "))?;
+    if rest.is_empty() || !rest.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse().ok().filter(|number| *number > 0)
+}
+
 fn with_cover_flag(store: &Store, mut playlist: Playlist) -> Playlist {
     playlist.has_cover = cover_file(store, &playlist.id).is_some_and(|path| path.is_file());
     playlist
@@ -25,8 +56,7 @@ fn with_cover_flag(store: &Store, mut playlist: Playlist) -> Playlist {
 pub fn create(store: &Store, name: String) -> AppResult<Vec<Playlist>> {
     let name = name.trim();
     let name = if name.is_empty() {
-        let count = store.snapshot().playlists.len() + 1;
-        format!("Playlist {count}")
+        next_default_name(&store.snapshot().playlists)
     } else {
         name.to_string()
     };
@@ -527,6 +557,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::for_test(dir.path());
         (dir, store)
+    }
+
+    #[test]
+    fn default_names_skip_used_numbers() {
+        let (_dir, store) = store();
+        create(&store, "Playlist 1".into()).unwrap();
+        create(&store, "New playlist #2".into()).unwrap();
+        let playlists = create(&store, "".into()).unwrap();
+        assert_eq!(playlists[2].name, "New playlist #3");
+        let id = playlists[0].id.clone();
+        delete(&store, id).unwrap();
+        let playlists = create(&store, "  ".into()).unwrap();
+        assert_eq!(playlists.last().unwrap().name, "New playlist #1");
     }
 
     #[test]

@@ -21,6 +21,7 @@ use self::scan::{collect_tracks, replaygain_multiplier, track_from_path, FolderN
 
 pub const STATE_EVENT: &str = "player://state";
 pub const TICK_EVENT: &str = "player://tick";
+pub const VIZ_EVENT: &str = "player://viz";
 pub const SPEED_MIN: f64 = 0.5;
 pub const SPEED_MAX: f64 = 2.0;
 
@@ -130,6 +131,7 @@ impl Player {
         crate::search::clear_temps();
         let _ = player.engine.set_eq(eq::EqParams::from_persist(&saved.eq));
         let _ = player.engine.set_speed(speed);
+        player.engine.set_viz_enabled(saved.visualizer);
 
         let weak = player.clone();
         std::thread::Builder::new()
@@ -139,6 +141,30 @@ impl Player {
                 weak.tick();
             })
             .expect("player ticker");
+
+        let viz_engine = Arc::clone(&player.engine);
+        let viz_app = player.app.clone();
+        std::thread::Builder::new()
+            .name("audios-viz".into())
+            .spawn(move || {
+                let mut last = [0u8; crate::viz::BANDS];
+                loop {
+                    std::thread::sleep(Duration::from_millis(33));
+                    if !viz_engine.viz_enabled() || !viz_engine.is_playing() {
+                        last = [0; crate::viz::BANDS];
+                        continue;
+                    }
+                    let Some(bands) = viz_engine.spectrum() else {
+                        continue;
+                    };
+                    if bands == last {
+                        continue;
+                    }
+                    last = bands;
+                    let _ = viz_app.emit(VIZ_EVENT, bands);
+                }
+            })
+            .expect("visualizer thread");
 
         player
     }
@@ -448,6 +474,30 @@ impl Player {
         Ok(self.snapshot())
     }
 
+    /// Append a song. An empty queue starts it. A playing or paused queue
+    /// keeps its place and play state.
+    pub fn enqueue_path(&self, path: &str) -> AppResult<PlayerSnapshot> {
+        if !Path::new(path).is_file() {
+            return Err(AppError::msg("That song is missing"));
+        }
+        let empty = {
+            let logic = self.logic.lock().expect("player lock");
+            logic.queue.is_idle()
+        };
+        if empty {
+            return self.play_tracks(
+                vec![track_from_path(Path::new(path))],
+                Some(path.to_string()),
+            );
+        }
+        {
+            let mut logic = self.logic.lock().expect("player lock");
+            logic.queue.enqueue(track_from_path(Path::new(path)));
+        }
+        self.emit_state();
+        Ok(self.snapshot())
+    }
+
     pub fn set_volume(&self, volume: f64) -> AppResult<PlayerSnapshot> {
         {
             let mut logic = self.logic.lock().expect("player lock");
@@ -506,6 +556,10 @@ impl Player {
         Ok(self.snapshot())
     }
 
+    pub fn set_viz_enabled(&self, enabled: bool) {
+        self.engine.set_viz_enabled(enabled);
+    }
+
     pub fn set_speed(&self, speed: f64) -> AppResult<PlayerSnapshot> {
         let speed = clamp_speed(speed);
         self.engine.set_speed(speed)?;
@@ -530,11 +584,7 @@ impl Player {
         }
         {
             let mut logic = self.logic.lock().expect("player lock");
-            for track in &mut logic.queue.tracks {
-                if let Some(next) = fresh.iter().find(|item| item.path == track.path) {
-                    *track = next.clone();
-                }
-            }
+            logic.queue.refresh_tracks(&fresh);
         }
         self.emit_state();
         fresh
@@ -698,13 +748,7 @@ impl Player {
             (
                 logic.gapless,
                 logic.pending_gapless,
-                logic.queue.peek_next_index().and_then(|index| {
-                    logic
-                        .queue
-                        .tracks
-                        .get(index)
-                        .map(|track| track.path.clone())
-                }),
+                logic.queue.peek_next().map(|track| track.path.clone()),
             )
         };
         if !gapless || pending {

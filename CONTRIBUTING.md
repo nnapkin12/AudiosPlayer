@@ -26,7 +26,7 @@ Player, tag, appearance, search, and `remote_start` / `remote_stop` / `remote_st
 
 - Playback goes through the `PlayerEngine` trait in [`src-tauri/src/player/engine.rs`](src-tauri/src/player/engine.rs) (rodio + Symphonia).
 - The parametric EQ in [`src-tauri/src/eq.rs`](src-tauri/src/eq.rs) wraps each decoder on the `audios-rodio` thread. One band list feeds the tone sliders and Advanced. Do not add a second graphic-EQ processor.
-- Queue order, repeat, and shuffle stay in [`src-tauri/src/player/queue.rs`](src-tauri/src/player/queue.rs). Keep those tests next to the logic.
+- Queue order, repeat, and shuffle stay in [`src-tauri/src/player/queue.rs`](src-tauri/src/player/queue.rs). The playback context (playlist or folder, plus index) is separate from the user queue. Append is `Queue::enqueue` in that file, and it must not rewrite the context. Keep those tests next to the logic.
 - Do not persist a resume offset. Leaving a track starts it at 0:00 next time. Speed is remembered.
 - `play_folder_file` queues the other audio files in that folder, capped at 2,000. Above the cap, only the chosen file is queued. The remote uses this when the song is not already in the queue.
 
@@ -63,6 +63,7 @@ Started from Settings. Idle until `remote_start`. Sound stays on this computer.
 - Do not serve the React app, file paths, or yt-dlp from this server.
 - Every request needs the pairing code. Search results are ids from the in-memory index. Play looks up the path on the server.
 - Now-playing for the phone is `Player::transport`. It skips the queue, the folder tree, and the EQ.
+- Playlist routes return playlist ids and song indexes. Do not send file paths.
 - Stop must drop the song index and the cached cover.
 
 ## UI

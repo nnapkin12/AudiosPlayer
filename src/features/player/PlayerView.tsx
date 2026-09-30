@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { Pencil, Search, X } from "lucide-react";
-import { BrowseBack, LibraryNav, LibraryPage, PlaylistsPage } from "@/features/player/Playlists";
+import { addToNewPlaylist, BrowseBack, LibraryNav, LibraryPage, PlaylistsPage } from "@/features/player/Playlists";
 import { PlayPauseIcon } from "@/features/shell/PlayPauseIcon";
 import { filterTracks, invalidateBrowse, locateMissing, openBrowsePage } from "@/features/player/browse";
 import { DiscoverView } from "@/features/player/DiscoverView";
@@ -97,7 +97,9 @@ export function PlayerView() {
   }
 
   async function playTracks(startPath?: string) {
-    await playTracksFrom(visibleTracks, startPath);
+    const start =
+      startPath ?? (listQuery.trim() && visibleTracks[0] ? visibleTracks[0].path : undefined);
+    await playTracksFrom(pageTracks, start);
   }
 
   async function playTracksFrom(tracks: Track[], startPath?: string) {
@@ -153,12 +155,33 @@ export function PlayerView() {
     setMenu({ x: event.clientX, y: event.clientY, items });
   }
 
-  function trackMenu(track: Track, queue: Track[] = visibleTracks): MenuEntry[] {
+  function trackMenu(track: Track, queue: Track[] = pageTracks): MenuEntry[] {
     return [
       { kind: "action", action: { label: "Play", onClick: () => void playTracksFrom(queue, track.path) } },
       {
+        kind: "action",
+        action: {
+          label: "Add to queue",
+          onClick: () => {
+            void api.enqueuePath(track.path).then((snapshot) => {
+              useAppStore.getState().applySnapshot(snapshot);
+            }).catch((error) => {
+              setStatus(errorMessage(error, "Could not add to queue"));
+            });
+          },
+        },
+      },
+      {
         kind: "submenu",
         label: "Add to playlist",
+        pinned: {
+          label: "New playlist",
+          onClick: () => {
+            void addToNewPlaylist([track.path]).catch((error) => {
+              setStatus(errorMessage(error, "Could not create playlist"));
+            });
+          },
+        },
         actions: playlists.map((item) => ({
           label: item.name,
           onClick: () => {
@@ -269,7 +292,7 @@ export function PlayerView() {
           <>
             <div className="px-5 pt-4">
               {browse.kind === "playlist" && playlist ? (
-                <div className="flex flex-col items-center pb-4 text-center">
+                <div className="flex flex-col items-center pb-1 text-center">
                   <div className="self-start">
                     <BrowseBack />
                   </div>
@@ -300,14 +323,14 @@ export function PlayerView() {
                   >
                     <PlaylistCover
                       id={playlist.id}
-                      iconSize={32}
-                      className="h-32 w-32 rounded-2xl shadow-[0_18px_40px_rgb(0_0_0_/_0.28)]"
+                      iconSize={48}
+                      className="h-48 w-48 rounded-2xl shadow-[0_18px_40px_rgb(0_0_0_/_0.28)]"
                     />
                     <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-2xl bg-black/45 text-[13px] font-semibold text-white opacity-0 group-hover:opacity-100">
                       {playlist.hasCover ? "Change" : "Add picture"}
                     </span>
                   </button>
-                  <div className="mt-4">
+                  <div className="mt-2">
                   <p className="text-[13px] font-semibold uppercase tracking-[0.06em] text-app-muted">
                     Playlist
                   </p>
@@ -345,7 +368,7 @@ export function PlayerView() {
                   )}
                   <p className="text-[14px] font-medium text-app-muted">{countLabel}</p>
                   </div>
-                  <div className="mt-3 flex flex-wrap justify-center gap-2">
+                  <div className="mt-2 flex flex-wrap justify-center gap-2">
                     <button
                       type="button"
                       onClick={() => void pickAudioFilesInto(playlist.id)}
@@ -365,7 +388,7 @@ export function PlayerView() {
                       onClick={() => void removePlaylist(playlist.id)}
                       className="rounded-md px-3 py-1.5 text-[13px] font-semibold text-app-danger hover:bg-app-hover"
                     >
-                      Remove
+                      Remove playlist
                     </button>
                     <button
                       type="button"

@@ -153,6 +153,7 @@ export const api = {
   seek: (positionMs: number) => invoke<PlayerSnapshot>("seek", { positionMs }),
   playIndex: (index: number) => invoke<PlayerSnapshot>("play_index", { index }),
   playPath: (path: string) => invoke<PlayerSnapshot>("play_path", { path }),
+  enqueuePath: (path: string) => invoke<PlayerSnapshot>("enqueue_path", { path }),
   playQueuePaths: (paths: string[], startPath?: string) =>
     invoke<PlayerSnapshot>("play_queue_paths", { paths, startPath: startPath ?? null }),
   playTracks: (tracks: Track[], startPath?: string) =>
@@ -220,6 +221,8 @@ export const api = {
     invoke<Appearance>("set_appearance", { theme, accent }),
   setMinimizeMovement: (enabled: boolean) =>
     invoke<Appearance>("set_minimize_movement", { enabled }),
+  setVisualizer: (enabled: boolean, main: string, border: string, glow: string) =>
+    invoke<Appearance>("set_visualizer", { enabled, main, border, glow }),
   saveCustomTheme: (theme: CustomTheme) =>
     invoke<Appearance>("save_custom_theme", { theme }),
   deleteCustomTheme: (id: string) => invoke<Appearance>("delete_custom_theme", { id }),

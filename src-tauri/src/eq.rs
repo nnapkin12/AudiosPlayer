@@ -7,6 +7,7 @@ use rodio::{Sample, Source};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
+use crate::viz::VizTap;
 
 pub const BAND_COUNT: usize = 10;
 /// ISO centers kept so older graphic curves and built-in presets load as peaking bands.
@@ -971,6 +972,7 @@ fn default_true() -> bool {
 pub struct EqShared {
     params: Mutex<EqParams>,
     generation: AtomicU64,
+    viz: VizTap,
 }
 
 impl Default for EqShared {
@@ -978,6 +980,7 @@ impl Default for EqShared {
         Self {
             params: Mutex::new(EqParams::bypass()),
             generation: AtomicU64::new(1),
+            viz: VizTap::new(),
         }
     }
 }
@@ -1000,6 +1003,23 @@ impl EqShared {
 
     fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
+    }
+
+    pub fn set_viz_enabled(&self, enabled: bool) {
+        self.viz.set_enabled(enabled);
+    }
+
+    pub fn viz_enabled(&self) -> bool {
+        self.viz.enabled()
+    }
+
+    #[inline]
+    pub fn push_viz(&self, sample: f32, rate: u32) {
+        self.viz.push(sample, rate);
+    }
+
+    pub fn spectrum(&self) -> Option<[u8; crate::viz::BANDS]> {
+        self.viz.spectrum()
     }
 }
 
@@ -1216,11 +1236,18 @@ impl EqFilter {
     }
 }
 
+/// Frames averaged into one visualizer sample. Stereo `next` calls are one per channel.
+const VIZ_DECIMATE: u32 = 4;
+
 pub struct EqSource<I> {
     inner: I,
     shared: Arc<EqShared>,
     generation: u64,
     filter: EqFilter,
+    viz_sum: f32,
+    viz_count: u32,
+    viz_span: u32,
+    viz_rate: u32,
 }
 
 impl<I> EqSource<I>
@@ -1229,7 +1256,9 @@ where
     I::Item: Sample,
 {
     pub fn new(inner: I, shared: Arc<EqShared>) -> Self {
-        let mut filter = EqFilter::new(inner.sample_rate(), inner.channels());
+        let channels = inner.channels().max(1) as u32;
+        let rate = inner.sample_rate().max(1);
+        let mut filter = EqFilter::new(rate, channels as u16);
         let params = shared.params();
         filter.configure(&params);
         Self {
@@ -1237,7 +1266,27 @@ where
             generation: shared.generation(),
             shared,
             filter,
+            viz_sum: 0.0,
+            viz_count: 0,
+            viz_span: channels * VIZ_DECIMATE,
+            viz_rate: (rate / VIZ_DECIMATE).max(1),
         }
+    }
+
+    #[inline]
+    fn tap(&mut self, sample: f32) {
+        if !self.shared.viz_enabled() {
+            return;
+        }
+        self.viz_sum += sample;
+        self.viz_count += 1;
+        if self.viz_count < self.viz_span {
+            return;
+        }
+        let frame = self.viz_sum / self.viz_count as f32;
+        self.viz_sum = 0.0;
+        self.viz_count = 0;
+        self.shared.push_viz(frame, self.viz_rate);
     }
 
     fn sync(&mut self) {
@@ -1259,7 +1308,9 @@ where
     #[inline]
     fn next(&mut self) -> Option<f32> {
         self.sync();
-        Some(self.filter.process(self.inner.next()?.to_f32()))
+        let sample = self.filter.process(self.inner.next()?.to_f32());
+        self.tap(sample);
+        Some(sample)
     }
 
     #[inline]

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { EqPanel } from "@/features/settings/EqPanel";
 import { RemotePanel } from "@/features/settings/RemotePanel";
@@ -33,8 +33,13 @@ export function SettingsView() {
   const accent = useAppStore((state) => state.accent);
   const customThemes = useAppStore((state) => state.customThemes);
   const minimizeMovement = useAppStore((state) => state.minimizeMovement);
+  const visualizer = useAppStore((state) => state.visualizer);
+  const vizMain = useAppStore((state) => state.vizMain);
+  const vizBorder = useAppStore((state) => state.vizBorder);
+  const vizGlow = useAppStore((state) => state.vizGlow);
   const setAppearance = useAppStore((state) => state.setAppearance);
   const setMinimizeMovement = useAppStore((state) => state.setMinimizeMovement);
+  const setVisualizer = useAppStore((state) => state.setVisualizer);
   const setStatus = useAppStore((state) => state.setStatus);
   const [builder, setBuilder] = useState<CustomTheme | "new" | null>(null);
   const [section, setSection] = useState<Section>("playback");
@@ -73,6 +78,15 @@ export function SettingsView() {
     } catch (error) {
       setStatus(errorMessage(error, "Could not remove theme"));
     }
+  }
+
+  function saveVisualizer(next: { enabled: boolean; main: string; border: string; glow: string }) {
+    const previous = { enabled: visualizer, main: vizMain, border: vizBorder, glow: vizGlow };
+    setVisualizer(next);
+    void api.setVisualizer(next.enabled, next.main, next.border, next.glow).catch((error) => {
+      setVisualizer(previous);
+      setStatus(errorMessage(error, "Could not save setting"));
+    });
   }
 
   return (
@@ -189,6 +203,27 @@ export function SettingsView() {
                   });
                 }}
               />
+              <Toggle
+                label="Audio Visualizer"
+                hint="Bars in the now-playing bar. Off uses no extra CPU."
+                checked={visualizer}
+                onChange={(checked) => {
+                  saveVisualizer({
+                    enabled: checked,
+                    main: vizMain,
+                    border: vizBorder,
+                    glow: vizGlow,
+                  });
+                }}
+              />
+              <VizColors
+                main={vizMain}
+                border={vizBorder}
+                glow={vizGlow}
+                onChange={(colors) => {
+                  saveVisualizer({ enabled: visualizer, ...colors });
+                }}
+              />
             </>
           ) : null}
 
@@ -275,6 +310,70 @@ function Toggle({
         onChange={(event) => onChange(event.target.checked)}
         className="h-4 w-4"
       />
+    </label>
+  );
+}
+
+const HEX = /^#[0-9a-fA-F]{6}$/;
+
+function VizColors({
+  main,
+  border,
+  glow,
+  onChange,
+}: {
+  main: string;
+  border: string;
+  glow: string;
+  onChange: (colors: { main: string; border: string; glow: string }) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2 py-3">
+      <VizColor label="Main Color" value={main} onChange={(value) => onChange({ main: value, border, glow })} />
+      <VizColor label="Border Color" value={border} onChange={(value) => onChange({ main, border: value, glow })} />
+      <VizColor label="Glow Color" value={glow} onChange={(value) => onChange({ main, border, glow: value })} />
+    </div>
+  );
+}
+
+function VizColor({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+  return (
+    <label className="flex items-center justify-between gap-3">
+      <span className="text-[14px] font-semibold text-app-subtle">{label}</span>
+      <span className="flex items-center gap-2">
+        <input
+          type="color"
+          value={HEX.test(value) ? value : "#8ec8ff"}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-8 w-10 cursor-pointer rounded border border-app-border bg-transparent p-0"
+          aria-label={label}
+        />
+        <input
+          value={draft}
+          onChange={(event) => {
+            const next = event.target.value;
+            setDraft(next);
+            if (HEX.test(next)) onChange(next);
+          }}
+          onBlur={() => {
+            if (!HEX.test(draft)) setDraft(value);
+          }}
+          spellCheck={false}
+          className="w-[92px] rounded-md border border-app-border bg-app px-2 py-1 font-mono text-[13px] text-app-text"
+        />
+      </span>
     </label>
   );
 }

@@ -29,6 +29,10 @@ interface AppState {
   accent: string;
   customThemes: CustomTheme[];
   minimizeMovement: boolean;
+  visualizer: boolean;
+  vizMain: string;
+  vizBorder: string;
+  vizGlow: string;
   tagFocusPath: string | null;
   setTab: (tab: AppTab) => void;
   setNowPlayingOpen: (open: boolean) => void;
@@ -44,6 +48,12 @@ interface AppState {
   setTagFocusPath: (path: string | null) => void;
   setAppearance: (theme: string, accent: string, customThemes?: CustomTheme[]) => void;
   setMinimizeMovement: (enabled: boolean) => void;
+  setVisualizer: (settings: {
+    enabled: boolean;
+    main: string;
+    border: string;
+    glow: string;
+  }) => void;
   applySnapshot: (snapshot: PlayerSnapshot) => void;
   applyTick: (tick: Tick) => void;
   refreshCover: (path: string | null) => Promise<void>;
@@ -70,6 +80,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   accent: "blue",
   customThemes: [],
   minimizeMovement: false,
+  visualizer: false,
+  vizMain: "#8ec8ff",
+  vizBorder: "#e8f3ff",
+  vizGlow: "#4aa3ff",
   tagFocusPath: null,
   setTab: (tab) => set({ tab }),
   setNowPlayingOpen: (nowPlayingOpen) => {
@@ -97,6 +111,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setMinimizeMovement: (enabled) => {
     applyMotion(enabled);
     set({ minimizeMovement: enabled });
+  },
+  setVisualizer: ({ enabled, main, border, glow }) => {
+    set({ visualizer: enabled, vizMain: main, vizBorder: border, vizGlow: glow });
   },
   applySnapshot: (snapshot) => {
     const previous = get().snapshot?.current?.path ?? null;

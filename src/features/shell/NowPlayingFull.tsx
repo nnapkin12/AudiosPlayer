@@ -3,6 +3,7 @@ import { ChevronDown, Repeat, Repeat1, Shuffle, SkipBack, SkipForward } from "lu
 import { PlayPauseIcon } from "@/features/shell/PlayPauseIcon";
 import { TransportSeek } from "@/features/shell/SeekBar";
 import { SpeedControl } from "@/features/shell/SpeedControl";
+import { Visualizer } from "@/features/shell/Visualizer";
 import { paletteFromPixels, type ArtColors } from "@/lib/artworkColor";
 import { api } from "@/lib/api";
 import { displayArtist, displayTitle } from "@/lib/format";
@@ -17,6 +18,7 @@ export function NowPlayingFull() {
   const playing = snapshot?.playing ?? false;
   const repeat = snapshot?.repeat ?? "off";
   const shuffle = snapshot?.shuffle ?? false;
+  const visualizer = useAppStore((state) => state.visualizer);
   const palette = useArtPalette(coverUrl);
 
   return (
@@ -33,8 +35,9 @@ export function NowPlayingFull() {
       </div>
 
       <div className="flex min-h-0 flex-1 items-center justify-center px-[clamp(1rem,4vw,3rem)] pb-8">
-        <div className="np-stage flex flex-col items-center">
-        <div className="np-cover overflow-hidden rounded-2xl bg-app-hover shadow-[0_18px_50px_rgb(0_0_0_/_0.28)]">
+        <div className={`np-stage flex flex-col items-center ${visualizer ? "np-stage-viz" : ""}`}>
+        <div className={visualizer ? "flex items-stretch gap-6" : undefined}>
+        <div className="np-cover shrink-0 overflow-hidden rounded-2xl bg-app-hover shadow-[0_18px_50px_rgb(0_0_0_/_0.28)]">
           {coverUrl ? (
             <img
               key={coverUrl}
@@ -45,6 +48,8 @@ export function NowPlayingFull() {
           ) : (
             <div className="aspect-square w-full bg-gradient-to-br from-app-hover to-app" />
           )}
+        </div>
+        {visualizer ? <Visualizer variant="stage" /> : null}
         </div>
 
         <div className="np-copy mt-8 text-center">
