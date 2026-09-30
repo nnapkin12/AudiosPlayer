@@ -38,7 +38,10 @@ export function pictureSrc(mime: string, data: string): string {
 }
 
 export function safeFileName(name: string): string {
-  const cleaned = name.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  const cleaned = name
+    .replace(/[\\/:*?"<>|]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   return cleaned.slice(0, 80) || "audio";
 }
 

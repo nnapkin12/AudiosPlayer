@@ -1,6 +1,7 @@
 import type { EqUpdate, EqUserPreset } from "./eq";
 import type {
   Appearance,
+  BatchResult,
   CoverArt,
   LibraryChange,
   MediaHit,
@@ -27,10 +28,7 @@ async function invoke<T>(command: string, args?: Record<string, unknown>): Promi
   return tauriInvoke<T>(command, args);
 }
 
-export async function listen<T>(
-  event: string,
-  handler: (payload: T) => void,
-): Promise<() => void> {
+export async function listen<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
   if (!isTauri()) {
     return () => undefined;
   }
@@ -160,10 +158,8 @@ export const api = {
     invoke<PlayerSnapshot>("play_tracks", { tracks, startPath: startPath ?? null }),
   playPlaylist: (id: string, startPath?: string) =>
     invoke<PlayerSnapshot>("play_playlist", { id, startPath: startPath ?? null }),
-  scanTracks: (path: string, fast = false) =>
-    invoke<Track[]>("scan_tracks", { path, fast }),
-  scanPlaylist: (id: string, fast = false) =>
-    invoke<Track[]>("scan_playlist", { id, fast }),
+  scanTracks: (path: string, fast = false) => invoke<Track[]>("scan_tracks", { path, fast }),
+  scanPlaylist: (id: string, fast = false) => invoke<Track[]>("scan_playlist", { id, fast }),
   listLibraryRoots: () => invoke<string[]>("list_library_roots"),
   listMissing: () => invoke<MissingItem[]>("list_missing"),
   relinkMissing: (scope: string, id: string, path: string, newPath: string) =>
@@ -182,17 +178,17 @@ export const api = {
   deleteCustomEq: (id: string) => invoke<PlayerSnapshot>("delete_custom_eq", { id }),
   importParametricEq: (text: string) => invoke<PlayerSnapshot>("import_parametric_eq", { text }),
   readTags: (path: string) => invoke<TagDoc>("read_tags", { path }),
-  writeTags: (path: string, fields: TagFields) =>
-    invoke<TagDoc>("write_tags", { path, fields }),
+  writeTags: (path: string, fields: TagFields) => invoke<TagDoc>("write_tags", { path, fields }),
   batchWrite: (paths: string[], fields: TagFields, apply: string[]) =>
-    invoke<number>("batch_write", { paths, fields, apply }),
+    invoke<BatchResult>("batch_write", { paths, fields, apply }),
   listAudioPaths: (path: string) => invoke<string[]>("list_audio_paths", { path }),
-  addPicture: (path: string, data: number[], mime: string, kind: string) =>
-    invoke<TagDoc>("add_picture", { path, data, mime, kind }),
-  removePicture: (path: string, index: number) =>
-    invoke<TagDoc>("remove_picture", { path, index }),
+  addPicture: (path: string, imagePath: string, kind: string) =>
+    invoke<TagDoc>("add_picture", { path, imagePath, kind }),
+  removePicture: (path: string, index: number) => invoke<TagDoc>("remove_picture", { path, index }),
   exportPicture: (path: string, index: number, dest: string) =>
     invoke<void>("export_picture", { path, index, dest }),
+  picturePreview: (path: string, index: number) =>
+    invoke<CoverArt | null>("picture_preview", { path, index }),
   addCustomField: (path: string, key: string, value: string) =>
     invoke<TagDoc>("add_custom_field", { path, key, value }),
   removeCustomField: (path: string, key: string) =>
@@ -202,8 +198,7 @@ export const api = {
   coverThumb: (path: string) => invoke<CoverArt | null>("cover_thumb", { path }),
   listPlaylists: () => invoke<Playlist[]>("list_playlists"),
   createPlaylist: (name: string) => invoke<Playlist[]>("create_playlist", { name }),
-  renamePlaylist: (id: string, name: string) =>
-    invoke<Playlist[]>("rename_playlist", { id, name }),
+  renamePlaylist: (id: string, name: string) => invoke<Playlist[]>("rename_playlist", { id, name }),
   deletePlaylist: (id: string) => invoke<Playlist[]>("delete_playlist", { id }),
   addToPlaylist: (id: string, paths: string[]) =>
     invoke<Playlist[]>("add_to_playlist", { id, paths }),
@@ -213,8 +208,7 @@ export const api = {
     invoke<Playlist[]>("set_playlist_cover", { id, path }),
   clearPlaylistCover: (id: string) => invoke<Playlist[]>("clear_playlist_cover", { id }),
   playlistCover: (id: string) => invoke<CoverArt | null>("playlist_cover", { id }),
-  setArtistImage: (key: string, path: string) =>
-    invoke<void>("set_artist_image", { key, path }),
+  setArtistImage: (key: string, path: string) => invoke<void>("set_artist_image", { key, path }),
   artistImage: (key: string) => invoke<CoverArt | null>("artist_image", { key }),
   getAppearance: () => invoke<Appearance>("get_appearance"),
   setAppearance: (theme: string, accent: string) =>
@@ -223,8 +217,7 @@ export const api = {
     invoke<Appearance>("set_minimize_movement", { enabled }),
   setVisualizer: (enabled: boolean, main: string, border: string, glow: string) =>
     invoke<Appearance>("set_visualizer", { enabled, main, border, glow }),
-  saveCustomTheme: (theme: CustomTheme) =>
-    invoke<Appearance>("save_custom_theme", { theme }),
+  saveCustomTheme: (theme: CustomTheme) => invoke<Appearance>("save_custom_theme", { theme }),
   deleteCustomTheme: (id: string) => invoke<Appearance>("delete_custom_theme", { id }),
   remoteStatus: () => invoke<RemoteStatus>("remote_status"),
   remoteStart: () => invoke<RemoteStatus>("remote_start"),

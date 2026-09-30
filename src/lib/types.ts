@@ -169,13 +169,23 @@ export interface PictureInfo {
   kind: string;
   mime: string;
   size: number;
-  dataBase64: string;
 }
 
 export interface RawItem {
   key: string;
   value: string;
   known: boolean;
+}
+
+export interface BatchFailure {
+  path: string;
+  error: string;
+}
+
+/** Outcome of a batch tag write. Files that failed did not stop the rest. */
+export interface BatchResult {
+  written: number;
+  failed: BatchFailure[];
 }
 
 export interface TagDoc {

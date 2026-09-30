@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use base64::Engine;
 use souvlaki::{
@@ -38,10 +38,18 @@ fn serve(player: Player, rx: mpsc::Receiver<()>) -> Result<(), String> {
     .map_err(|error| format!("{error:?}"))?;
 
     let events = player.clone();
+    let (event_tx, event_rx) = mpsc::channel::<MediaControlEvent>();
+    std::thread::Builder::new()
+        .name("audios-mpris-events".into())
+        .spawn(move || {
+            while let Ok(event) = event_rx.recv() {
+                dispatch(event, &events);
+            }
+        })
+        .map_err(|error| format!("{error:?}"))?;
     controls
         .attach(move |event| {
-            let player = events.clone();
-            std::thread::spawn(move || dispatch(event, &player));
+            let _ = event_tx.send(event);
         })
         .map_err(|error| format!("{error:?}"))?;
 
@@ -261,22 +269,43 @@ fn write_cover(bytes: &[u8]) -> Option<PathBuf> {
         std::fs::write(&tmp, bytes).ok()?;
         std::fs::rename(&tmp, &path).ok()?;
     }
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let candidate = entry.path();
-            if candidate == path {
-                continue;
-            }
-            let name = candidate
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("");
-            if name.starts_with("cover-") && (name.ends_with(".jpg") || name.ends_with(".part")) {
-                let _ = std::fs::remove_file(candidate);
-            }
-        }
-    }
+    sweep_old_covers(&dir, &path);
     Some(path)
+}
+
+/// Keep the current file (and anything written in the last 30 s) so the
+/// shell can still load a just-replaced cover.
+fn sweep_old_covers(dir: &Path, keep: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let candidate = entry.path();
+        if candidate == keep {
+            continue;
+        }
+        let name = candidate
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if !name.starts_with("cover-") {
+            continue;
+        }
+        if !(name.ends_with(".jpg") || name.ends_with(".part")) {
+            continue;
+        }
+        let recent = candidate
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age < Duration::from_secs(30));
+        if recent {
+            continue;
+        }
+        let _ = std::fs::remove_file(candidate);
+    }
 }
 
 fn hash_bytes(bytes: &[u8]) -> u64 {

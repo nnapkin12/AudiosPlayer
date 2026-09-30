@@ -24,9 +24,12 @@ export function RemotePanel() {
   useEffect(() => {
     let alive = true;
     let unlisten: () => void = () => undefined;
-    void api.remoteStatus().then((status) => {
-      if (alive) setRemote(status);
-    }).catch(() => undefined);
+    void api
+      .remoteStatus()
+      .then((status) => {
+        if (alive) setRemote(status);
+      })
+      .catch(() => undefined);
     void listen<RemoteStatus>("remote://status", (status) => {
       if (alive) setRemote(status);
     }).then((stop) => {

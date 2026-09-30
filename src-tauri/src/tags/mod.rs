@@ -63,7 +63,6 @@ pub struct PictureInfo {
     pub kind: String,
     pub mime: String,
     pub size: usize,
-    pub data_base64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,19 +178,49 @@ pub fn write_tags(path: &str, fields: TagFields) -> AppResult<TagDoc> {
     read_tags(path)
 }
 
-pub fn batch_write(paths: Vec<String>, fields: TagFields, apply: Vec<String>) -> AppResult<usize> {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchFailure {
+    pub path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchResult {
+    pub written: usize,
+    pub failed: Vec<BatchFailure>,
+}
+
+/// Write `apply` fields to every path. A file that fails is reported and the
+/// rest still get written; files already done are not rolled back.
+pub fn batch_write(
+    paths: Vec<String>,
+    fields: TagFields,
+    apply: Vec<String>,
+) -> AppResult<BatchResult> {
     if apply.is_empty() {
         return Err(AppError::msg("choose at least one field to apply"));
     }
-    let mut written = 0;
+    let mut result = BatchResult {
+        written: 0,
+        failed: Vec::new(),
+    };
     for path in paths {
-        mutate_tag(Path::new(&path), |tag| {
+        match mutate_tag(Path::new(&path), |tag| {
             apply_fields(tag, &fields, Some(&apply))
-        })?;
-        forget_thumb(&path);
-        written += 1;
+        }) {
+            Ok(()) => {
+                forget_thumb(&path);
+                result.written += 1;
+            }
+            Err(error) => result.failed.push(BatchFailure {
+                path,
+                error: error.to_string(),
+            }),
+        }
     }
-    Ok(written)
+    Ok(result)
 }
 
 pub fn list_audio_paths(path: &str) -> AppResult<Vec<String>> {
@@ -203,6 +232,24 @@ pub fn list_audio_paths(path: &str) -> AppResult<Vec<String>> {
         .into_iter()
         .map(|track| track.path)
         .collect())
+}
+
+const PICTURE_FILE_CAP: u64 = 16 * 1024 * 1024;
+const COVER_DISPLAY_EDGE: u32 = 512;
+const PICTURE_PREVIEW_EDGE: u32 = 480;
+
+/// Read the image from disk and embed it. The webview sends a path, not bytes.
+pub fn add_picture_from_path(path: &str, image_path: &str, kind: String) -> AppResult<TagDoc> {
+    let image = Path::new(image_path);
+    if !image.is_file() {
+        return Err(AppError::msg("pick an image to embed"));
+    }
+    let len = image.metadata()?.len();
+    if len == 0 || len > PICTURE_FILE_CAP {
+        return Err(AppError::msg("that image is too large to embed"));
+    }
+    let data = std::fs::read(image)?;
+    add_picture(path, data, String::new(), kind)
 }
 
 pub fn add_picture(path: &str, data: Vec<u8>, mime: String, kind: String) -> AppResult<TagDoc> {
@@ -263,6 +310,29 @@ pub fn remove_custom_field(path: &str, key: String) -> AppResult<TagDoc> {
     read_tags(path)
 }
 
+/// One embedded picture, downscaled for the Tags preview. Bytes are not
+/// included in [`TagDoc`] so `read_tags` stays small.
+pub fn picture_preview(path: &str, index: usize) -> AppResult<Option<CoverArt>> {
+    if !is_audio_path(Path::new(path)) {
+        return Ok(None);
+    }
+    let tagged = read_audio(Path::new(path))?;
+    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+        return Ok(None);
+    };
+    let Some(picture) = tag.pictures().get(index) else {
+        return Ok(None);
+    };
+    let data_base64 = display_base64(picture.data(), PICTURE_PREVIEW_EDGE);
+    if data_base64.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(CoverArt {
+        mime: "image/jpeg".into(),
+        data_base64,
+    }))
+}
+
 pub fn cover_for(path: &str) -> AppResult<Option<CoverArt>> {
     if !is_audio_path(Path::new(path)) {
         return Ok(None);
@@ -279,7 +349,7 @@ pub fn cover_for(path: &str) -> AppResult<Option<CoverArt>> {
     let Some(picture) = chosen else {
         return Ok(None);
     };
-    let data_base64 = display_base64(picture.data(), 720);
+    let data_base64 = display_base64(picture.data(), COVER_DISPLAY_EDGE);
     if data_base64.is_empty() {
         return Ok(None);
     }
@@ -397,6 +467,46 @@ pub fn staging_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.audios-tmp.{ext}"))
 }
 
+const STAGING_MARK: &str = ".audios-tmp.";
+const STAGING_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Is this a tag-write staging file left behind by a crash? Only files older
+/// than an hour count, so a write in progress on another thread is safe.
+pub fn is_stale_staging(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if !name.starts_with('.') || !name.contains(STAGING_MARK) {
+        return false;
+    }
+    path.metadata()
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > STAGING_STALE_AFTER)
+}
+
+/// Remove stale staging files next to `path`.
+pub fn sweep_stale_staging(path: &Path) {
+    let dir = if path.is_dir() {
+        path
+    } else {
+        match path.parent() {
+            Some(parent) => parent,
+            None => return,
+        }
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let candidate = entry.path();
+        if is_stale_staging(&candidate) {
+            let _ = std::fs::remove_file(&candidate);
+        }
+    }
+}
+
 fn read_audio(path: &Path) -> AppResult<lofty::file::TaggedFile> {
     // BestAttempt still fails the whole file on a bad ID3 TDRC/TYER. Relaxed
     // drops that one frame so the rest of the tag can load. MP4 files with a
@@ -411,6 +521,7 @@ where
     if !path.is_file() {
         return Err(AppError::msg("that path is not a file"));
     }
+    sweep_stale_staging(path);
     let tmp = staging_path(path);
     if tmp.exists() {
         std::fs::remove_file(&tmp)?;
@@ -714,7 +825,6 @@ fn pictures_from_tag(tag: &Tag) -> Vec<PictureInfo> {
                 .map(|mime| mime.as_str().to_string())
                 .unwrap_or_else(|| "image/jpeg".into()),
             size: picture.data().len(),
-            data_base64: display_base64(picture.data(), 640),
         })
         .collect()
 }
@@ -822,7 +932,7 @@ pub fn sanitize_release_date(value: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let normalized = trimmed.replace('/', "-").replace('.', "-");
+    let normalized = trimmed.replace(['/', '.'], "-");
     let date = normalized
         .split([' ', 'T'])
         .next()
@@ -1086,6 +1196,15 @@ mod tests {
     fn picture_round_trip_kinds() {
         assert_eq!(picture_kind(picture_type_from("front")), "front");
         assert_eq!(picture_kind(picture_type_from("leaflet")), "leaflet");
+        let info = PictureInfo {
+            index: 0,
+            kind: "front".into(),
+            mime: "image/jpeg".into(),
+            size: 4_000_000,
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("dataBase64").is_none());
+        assert_eq!(json["size"], 4_000_000);
     }
 
     #[test]
@@ -1101,6 +1220,59 @@ mod tests {
         assert!(
             lofty::file::FileType::from_path(Path::new("/music/.01 song.mp3.audios-tmp")).is_none()
         );
+    }
+
+    #[test]
+    fn batch_write_keeps_going_past_a_bad_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("missing.mp3");
+        let not_audio = dir.path().join("notes.mp3");
+        std::fs::write(&not_audio, b"this is not an mp3").unwrap();
+        let fields = TagFields {
+            title: Some("New".into()),
+            ..TagFields::default()
+        };
+        let result = batch_write(
+            vec![
+                bad.to_string_lossy().into(),
+                not_audio.to_string_lossy().into(),
+            ],
+            fields,
+            vec!["title".into()],
+        )
+        .unwrap();
+        assert_eq!(result.written, 0);
+        assert_eq!(result.failed.len(), 2);
+        assert!(result.failed[0].path.ends_with("missing.mp3"));
+        assert!(!result.failed[1].error.is_empty());
+    }
+
+    #[test]
+    fn stale_staging_files_are_swept_but_fresh_ones_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let song = dir.path().join("song.mp3");
+        std::fs::write(&song, b"x").unwrap();
+        let stale = staging_path(&song);
+        std::fs::write(&stale, b"half").unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        let fresh = dir.path().join(".other.audios-tmp.flac");
+        std::fs::write(&fresh, b"in progress").unwrap();
+        let unrelated = dir.path().join(".hidden.mp3");
+        std::fs::write(&unrelated, b"keep").unwrap();
+        assert!(is_stale_staging(&stale));
+        assert!(!is_stale_staging(&fresh));
+        assert!(!is_stale_staging(&unrelated));
+        sweep_stale_staging(&song);
+        assert!(!stale.exists());
+        assert!(fresh.exists());
+        assert!(unrelated.exists());
+        assert!(song.exists());
     }
 
     #[test]

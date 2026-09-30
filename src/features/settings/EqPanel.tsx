@@ -34,6 +34,7 @@ import {
 } from "@/lib/eq";
 import { errorMessage } from "@/lib/format";
 import { useAppStore } from "@/store/useAppStore";
+import { confirm } from "@/ui/confirm";
 
 const KIND_OPTIONS: Array<{ id: FilterKind; label: string }> = [
   { id: "peak", label: "Peak" },
@@ -55,6 +56,14 @@ export function EqPanel() {
   const sourceId = useRef(remote.presetId || FLAT_EQ_ID);
   const timer = useRef(0);
 
+  const remoteKey = [
+    remote.enabled,
+    remote.presetId,
+    remote.preamp,
+    remote.autoPreamp,
+    ...(remote.bands ?? []).map((band) => `${band.kind}:${band.freq}:${band.gain}:${band.q}`),
+  ].join("|");
+
   useEffect(() => {
     if (!dragging.current) {
       setEq({
@@ -68,7 +77,7 @@ export function EqPanel() {
         if (custom) setName(custom.name);
       }
     }
-  }, [remote]);
+  }, [remoteKey]); // eslint-disable-line react-hooks/exhaustive-deps -- remoteKey is the snapshot equality check
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
 
@@ -165,6 +174,14 @@ export function EqPanel() {
   }
 
   async function removePreset(id: string) {
+    const preset = eq.customPresets.find((item) => item.id === id);
+    const ok = await confirm({
+      title: `Remove preset “${preset?.name ?? "Custom"}”?`,
+      body: "The saved curve is gone. The equalizer keeps its current settings.",
+      confirmLabel: "Remove preset",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       applySnapshot(await api.deleteCustomEq(id));
     } catch (error) {
@@ -288,7 +305,8 @@ export function EqPanel() {
       {showProfileNote ? (
         <div className="rounded-lg border border-app-border bg-app-hover px-3 py-3">
           <p className="text-[14px] leading-6 text-app-text">
-            A full parametric profile is active. These sliders only change gain. The other bands are still in the signal.
+            A full parametric profile is active. These sliders only change gain. The other bands are
+            still in the signal.
           </p>
           <button
             type="button"
@@ -340,7 +358,9 @@ export function EqPanel() {
             />
           ) : null}
           <details className="rounded-lg border border-app-border px-3 py-2">
-            <summary className="cursor-pointer text-[15px] font-semibold text-app-text">Paste AutoEQ</summary>
+            <summary className="cursor-pointer text-[15px] font-semibold text-app-text">
+              Paste AutoEQ
+            </summary>
             <p className="mt-2 text-[13px] leading-5 text-app-muted">
               ParametricEQ lines only. Preamp, PK, LSC, and HSC. Lines starting with # are ignored.
             </p>
@@ -459,15 +479,33 @@ function ResponseCurve({
   const pad = 12;
   const minDb = -12;
   const maxDb = 12;
-  const xOf = (freq: number) => pad + (Math.log(Math.max(20, freq) / 20) / Math.log(1000)) * (width - pad * 2);
+  const xOf = (freq: number) =>
+    pad + (Math.log(Math.max(20, freq) / 20) / Math.log(1000)) * (width - pad * 2);
   const yOf = (db: number) =>
     pad + ((maxDb - Math.max(minDb, Math.min(maxDb, db))) / (maxDb - minDb)) * (height - pad * 2);
   const coords = points.map((point) => `${xOf(point.f).toFixed(1)},${yOf(point.db).toFixed(1)}`);
   const zeroY = yOf(0);
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-36 w-full" role="img" aria-label="Equalizer frequency response">
-      <line x1={pad} x2={width - pad} y1={zeroY} y2={zeroY} className="stroke-app-border" strokeWidth="1" />
-      <polyline fill="none" className="stroke-app-accent" strokeWidth="2" points={coords.join(" ")} />
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      className="h-36 w-full"
+      role="img"
+      aria-label="Equalizer frequency response"
+    >
+      <line
+        x1={pad}
+        x2={width - pad}
+        y1={zeroY}
+        y2={zeroY}
+        className="stroke-app-border"
+        strokeWidth="1"
+      />
+      <polyline
+        fill="none"
+        className="stroke-app-accent"
+        strokeWidth="2"
+        points={coords.join(" ")}
+      />
       {bands.map((band, index) => (
         <circle
           key={index}
@@ -538,7 +576,9 @@ function BandEditor({
       <label className="block">
         <span className="flex items-center justify-between gap-3">
           <span className="text-[14px] font-semibold text-app-text">Q</span>
-          <span className="text-[13px] font-semibold tabular-nums text-app-subtle">{band.q.toFixed(2)}</span>
+          <span className="text-[13px] font-semibold tabular-nums text-app-subtle">
+            {band.q.toFixed(2)}
+          </span>
         </span>
         <input
           type="range"
@@ -573,7 +613,9 @@ function Toggle({
     <label className="flex cursor-pointer items-start justify-between gap-4">
       <span>
         <span className="block text-[16px] font-semibold text-app-text">{label}</span>
-        {hint ? <span className="mt-1 block text-[14px] leading-6 text-app-muted">{hint}</span> : null}
+        {hint ? (
+          <span className="mt-1 block text-[14px] leading-6 text-app-muted">{hint}</span>
+        ) : null}
       </span>
       <input
         type="checkbox"
@@ -607,7 +649,9 @@ function GainSlider({
       <span className="flex items-start justify-between gap-3">
         <span>
           <span className="block text-[15px] font-semibold text-app-text">{label}</span>
-          {hint ? <span className="mt-1 block text-[13px] leading-5 text-app-muted">{hint}</span> : null}
+          {hint ? (
+            <span className="mt-1 block text-[13px] leading-5 text-app-muted">{hint}</span>
+          ) : null}
         </span>
         <span className="shrink-0 pt-0.5 text-[13px] font-semibold tabular-nums text-app-subtle">
           {value > 0 ? "+" : ""}

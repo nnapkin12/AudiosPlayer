@@ -65,7 +65,12 @@ describe("editBand", () => {
 
 describe("applyToneControls", () => {
   it("zeros hidden bands and restores shelves", () => {
-    const bands: EqBand[] = toneBands().map((band, index) => ({ ...band, kind: "peak", freq: 1000 + index, gain: 1 }));
+    const bands: EqBand[] = toneBands().map((band, index) => ({
+      ...band,
+      kind: "peak",
+      freq: 1000 + index,
+      gain: 1,
+    }));
     const next = applyToneControls(bands);
     expect(isToneTemplate(next)).toBe(true);
     expect(next[0].kind).toBe("lowShelf");

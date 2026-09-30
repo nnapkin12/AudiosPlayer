@@ -557,11 +557,38 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
     }).then(function (res) {
-      if (!res.ok) return null;
+      if (res.status === 404) {
+        noteRestart();
+        return null;
+      }
+      if (!res.ok) {
+        flash("Could not reach Audios!");
+        return null;
+      }
       return res.json();
     }).then(function (state) {
       if (state) apply(state);
-    }).catch(function () {});
+    }).catch(function () {
+      flash("Could not reach Audios!");
+    });
+  }
+
+  function noteRestart() {
+    title.textContent = "Remote restarted — rescan the QR";
+    if (events) {
+      events.close();
+      events = null;
+    }
+  }
+
+  function flash(text) {
+    if (title.dataset.hold === "1") return;
+    var previous = title.textContent;
+    title.textContent = text;
+    setTimeout(function () {
+      if (title.dataset.hold === "1") return;
+      title.textContent = previous;
+    }, 2500);
   }
 
   function showPlayer() {
@@ -618,8 +645,17 @@
     menu.hidden = true;
     gear.setAttribute("aria-expanded", "false");
     fetch("/search?code=" + encodeURIComponent(code) + "&q=" + encodeURIComponent(query))
-      .then(function (res) { return res.ok ? res.json() : { hits: [] }; })
-      .then(renderHits)
+      .then(function (res) {
+        if (res.status === 404) {
+          noteRestart();
+          return { hits: [], dead: true };
+        }
+        return res.ok ? res.json() : { hits: [] };
+      })
+      .then(function (payload) {
+        if (payload && payload.dead) return;
+        renderHits(payload);
+      })
       .catch(function () { renderHits({ hits: [] }); });
   }
 
@@ -818,6 +854,18 @@
   var events = new EventSource("/events?code=" + encodeURIComponent(code));
   events.onmessage = function (event) {
     try { apply(JSON.parse(event.data)); } catch (e) {}
+  };
+  events.onerror = function () {
+    events.close();
+    events = null;
+    fetch("/?code=" + encodeURIComponent(code), { method: "GET" })
+      .then(function (res) {
+        if (res.status === 404) noteRestart();
+        else flash("Could not reach Audios!");
+      })
+      .catch(function () {
+        flash("Could not reach Audios!");
+      });
   };
 })();
 </script>

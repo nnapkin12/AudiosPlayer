@@ -71,7 +71,10 @@ function splitCredits(label: string): string[] {
 function splitSlash(value: string): string[] {
   const trimmed = value.trim();
   if (!trimmed.includes("/")) return [trimmed];
-  const bits = trimmed.split(/\s*\/\s*/).map((bit) => bit.trim()).filter(Boolean);
+  const bits = trimmed
+    .split(/\s*\/\s*/)
+    .map((bit) => bit.trim())
+    .filter(Boolean);
   if (bits.length < 2) return [trimmed];
   if (bits.every((bit) => bit.length <= 3)) return [trimmed];
   return bits;
@@ -80,7 +83,10 @@ function splitSlash(value: string): string[] {
 function splitCommaNames(value: string): string[] {
   const trimmed = value.trim();
   if (!trimmed.includes(",")) return [trimmed];
-  const bits = trimmed.split(/\s*,\s*/).map((bit) => bit.trim()).filter(Boolean);
+  const bits = trimmed
+    .split(/\s*,\s*/)
+    .map((bit) => bit.trim())
+    .filter(Boolean);
   if (bits.length < 2) return [trimmed];
   if (bits.some((bit) => bit.length < 2)) return [trimmed];
   if (bits.slice(1).some((bit) => /^the\s/i.test(bit))) return [trimmed];

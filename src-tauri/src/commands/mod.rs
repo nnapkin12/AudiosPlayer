@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use tauri::State;
 
@@ -9,7 +10,7 @@ use crate::player::queue::RepeatMode;
 use crate::player::scan::Track;
 use crate::player::{Player, PlayerSnapshot};
 use crate::search::MediaHit;
-use crate::tags::{CoverArt, TagDoc, TagFields};
+use crate::tags::{BatchResult, CoverArt, TagDoc, TagFields};
 
 #[tauri::command]
 pub fn player_state(player: State<Player>) -> PlayerSnapshot {
@@ -17,8 +18,9 @@ pub fn player_state(player: State<Player>) -> PlayerSnapshot {
 }
 
 #[tauri::command]
-pub fn open_path(player: State<Player>, path: String) -> AppResult<PlayerSnapshot> {
-    player.open_path(&path)
+pub async fn open_path(player: State<'_, Player>, path: String) -> AppResult<PlayerSnapshot> {
+    let player = (*player).clone();
+    run_blocking(move || player.open_path(&path)).await
 }
 
 #[tauri::command]
@@ -62,8 +64,9 @@ pub fn play_index(player: State<Player>, index: usize) -> AppResult<PlayerSnapsh
 }
 
 #[tauri::command]
-pub fn play_path(player: State<Player>, path: String) -> AppResult<PlayerSnapshot> {
-    player.play_path(&path)
+pub async fn play_path(player: State<'_, Player>, path: String) -> AppResult<PlayerSnapshot> {
+    let player = (*player).clone();
+    run_blocking(move || player.play_path(&path)).await
 }
 
 #[tauri::command]
@@ -72,60 +75,78 @@ pub fn enqueue_path(player: State<Player>, path: String) -> AppResult<PlayerSnap
 }
 
 #[tauri::command]
-pub fn play_playlist(
-    player: State<Player>,
-    store: State<Store>,
+pub async fn play_playlist(
+    player: State<'_, Player>,
+    store: State<'_, Store>,
     id: String,
     start_path: Option<String>,
 ) -> AppResult<PlayerSnapshot> {
-    crate::playlists::sync(&store);
-    let playlists = crate::playlists::list(&store);
-    let playlist = playlists
-        .iter()
-        .find(|playlist| playlist.id == id)
-        .ok_or_else(|| crate::error::AppError::msg("playlist not found"))?;
-    player.play_queue_paths(crate::playlists::flatten_paths(playlist), start_path)
+    let player = (*player).clone();
+    let store = (*store).clone();
+    run_blocking(move || {
+        crate::playlists::sync(&store);
+        let playlists = crate::playlists::list(&store);
+        let playlist = playlists
+            .iter()
+            .find(|playlist| playlist.id == id)
+            .ok_or_else(|| crate::error::AppError::msg("playlist not found"))?;
+        player.play_queue_paths(crate::playlists::flatten_paths(playlist), start_path)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn play_queue_paths(
-    player: State<Player>,
+pub async fn play_queue_paths(
+    player: State<'_, Player>,
     paths: Vec<String>,
     start_path: Option<String>,
 ) -> AppResult<PlayerSnapshot> {
-    player.play_queue_paths(paths, start_path)
+    let player = (*player).clone();
+    run_blocking(move || player.play_queue_paths(paths, start_path)).await
 }
 
 #[tauri::command]
-pub fn play_tracks(
-    player: State<Player>,
+pub async fn play_tracks(
+    player: State<'_, Player>,
     tracks: Vec<Track>,
     start_path: Option<String>,
 ) -> AppResult<PlayerSnapshot> {
-    player.play_tracks(tracks, start_path)
+    let player = (*player).clone();
+    run_blocking(move || player.play_tracks(tracks, start_path)).await
 }
 
 #[tauri::command]
-pub fn scan_tracks(path: String, fast: bool) -> AppResult<Vec<Track>> {
-    if fast {
-        crate::player::scan::collect_tracks_fast(Path::new(&path))
-    } else {
-        crate::player::scan::collect_tracks(Path::new(&path))
-    }
+pub async fn scan_tracks(path: String, fast: bool) -> AppResult<Vec<Track>> {
+    run_blocking(move || {
+        if fast {
+            crate::player::scan::collect_tracks_fast(Path::new(&path))
+        } else {
+            crate::player::scan::collect_tracks(Path::new(&path))
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn scan_playlist(store: State<Store>, id: String, fast: bool) -> AppResult<Vec<Track>> {
-    crate::playlists::sync(&store);
-    let playlists = crate::playlists::list(&store);
-    let playlist = playlists
-        .iter()
-        .find(|playlist| playlist.id == id)
-        .ok_or_else(|| AppError::msg("playlist not found"))?;
-    Ok(crate::player::scan::collect_many(
-        &crate::playlists::flatten_paths(playlist),
-        fast,
-    ))
+pub async fn scan_playlist(
+    store: State<'_, Store>,
+    id: String,
+    fast: bool,
+) -> AppResult<Vec<Track>> {
+    let store = (*store).clone();
+    run_blocking(move || {
+        crate::playlists::sync(&store);
+        let playlists = crate::playlists::list(&store);
+        let playlist = playlists
+            .iter()
+            .find(|playlist| playlist.id == id)
+            .ok_or_else(|| AppError::msg("playlist not found"))?;
+        Ok(crate::player::scan::collect_many(
+            &crate::playlists::flatten_paths(playlist),
+            fast,
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -207,63 +228,76 @@ pub fn import_parametric_eq(player: State<Player>, text: String) -> AppResult<Pl
 }
 
 #[tauri::command]
-pub fn read_tags(path: String) -> AppResult<TagDoc> {
-    crate::tags::read_tags(&path)
+pub async fn read_tags(path: String) -> AppResult<TagDoc> {
+    run_blocking(move || crate::tags::read_tags(&path)).await
 }
 
 #[tauri::command]
-pub fn write_tags(path: String, fields: TagFields) -> AppResult<TagDoc> {
-    crate::tags::write_tags(&path, fields)
+pub async fn write_tags(path: String, fields: TagFields) -> AppResult<TagDoc> {
+    run_blocking(move || crate::tags::write_tags(&path, fields)).await
 }
 
 #[tauri::command]
-pub fn batch_write(paths: Vec<String>, fields: TagFields, apply: Vec<String>) -> AppResult<usize> {
-    crate::tags::batch_write(paths, fields, apply)
+pub async fn batch_write(
+    paths: Vec<String>,
+    fields: TagFields,
+    apply: Vec<String>,
+) -> AppResult<BatchResult> {
+    run_blocking(move || crate::tags::batch_write(paths, fields, apply)).await
 }
 
 #[tauri::command]
-pub fn list_audio_paths(path: String) -> AppResult<Vec<String>> {
-    crate::tags::list_audio_paths(&path)
+pub async fn list_audio_paths(path: String) -> AppResult<Vec<String>> {
+    run_blocking(move || crate::tags::list_audio_paths(&path)).await
 }
 
 #[tauri::command]
-pub fn add_picture(path: String, data: Vec<u8>, mime: String, kind: String) -> AppResult<TagDoc> {
-    crate::tags::add_picture(&path, data, mime, kind)
+pub async fn add_picture(path: String, image_path: String, kind: String) -> AppResult<TagDoc> {
+    run_blocking(move || crate::tags::add_picture_from_path(&path, &image_path, kind)).await
 }
 
 #[tauri::command]
-pub fn remove_picture(path: String, index: usize) -> AppResult<TagDoc> {
-    crate::tags::remove_picture(&path, index)
+pub async fn remove_picture(path: String, index: usize) -> AppResult<TagDoc> {
+    run_blocking(move || crate::tags::remove_picture(&path, index)).await
 }
 
 #[tauri::command]
-pub fn export_picture(path: String, index: usize, dest: String) -> AppResult<()> {
-    crate::tags::export_picture(&path, index, &dest)
+pub async fn export_picture(path: String, index: usize, dest: String) -> AppResult<()> {
+    run_blocking(move || crate::tags::export_picture(&path, index, &dest)).await
 }
 
 #[tauri::command]
-pub fn add_custom_field(path: String, key: String, value: String) -> AppResult<TagDoc> {
-    crate::tags::add_custom_field(&path, key, value)
+pub async fn add_custom_field(path: String, key: String, value: String) -> AppResult<TagDoc> {
+    run_blocking(move || crate::tags::add_custom_field(&path, key, value)).await
 }
 
 #[tauri::command]
-pub fn remove_custom_field(path: String, key: String) -> AppResult<TagDoc> {
-    crate::tags::remove_custom_field(&path, key)
+pub async fn remove_custom_field(path: String, key: String) -> AppResult<TagDoc> {
+    run_blocking(move || crate::tags::remove_custom_field(&path, key)).await
 }
 
 #[tauri::command]
-pub fn refresh_metadata(player: State<Player>, paths: Vec<String>) -> Vec<Track> {
-    player.refresh_metadata(&paths)
+pub async fn refresh_metadata(
+    player: State<'_, Player>,
+    paths: Vec<String>,
+) -> AppResult<Vec<Track>> {
+    let player = (*player).clone();
+    run_blocking(move || Ok(player.refresh_metadata(&paths))).await
 }
 
 #[tauri::command]
-pub fn cover_art(path: String) -> AppResult<Option<CoverArt>> {
-    crate::tags::cover_for(&path)
+pub async fn cover_art(path: String) -> AppResult<Option<CoverArt>> {
+    run_blocking(move || crate::tags::cover_for(&path)).await
 }
 
 #[tauri::command]
-pub fn cover_thumb(path: String) -> AppResult<Option<CoverArt>> {
-    crate::tags::cover_thumb(&path)
+pub async fn picture_preview(path: String, index: usize) -> AppResult<Option<CoverArt>> {
+    run_blocking(move || crate::tags::picture_preview(&path, index)).await
+}
+
+#[tauri::command]
+pub async fn cover_thumb(path: String) -> AppResult<Option<CoverArt>> {
+    run_blocking(move || crate::tags::cover_thumb(&path)).await
 }
 
 #[tauri::command]
@@ -305,12 +339,13 @@ pub fn remove_from_playlist(
 }
 
 #[tauri::command]
-pub fn set_playlist_cover(
-    store: State<Store>,
+pub async fn set_playlist_cover(
+    store: State<'_, Store>,
     id: String,
     path: String,
 ) -> AppResult<Vec<Playlist>> {
-    crate::playlists::set_cover_from_path(&store, id, path)
+    let store = (*store).clone();
+    run_blocking(move || crate::playlists::set_cover_from_path(&store, id, path)).await
 }
 
 #[tauri::command]
@@ -319,18 +354,21 @@ pub fn clear_playlist_cover(store: State<Store>, id: String) -> AppResult<Vec<Pl
 }
 
 #[tauri::command]
-pub fn playlist_cover(store: State<Store>, id: String) -> AppResult<Option<CoverArt>> {
-    crate::playlists::cover(&store, &id)
+pub async fn playlist_cover(store: State<'_, Store>, id: String) -> AppResult<Option<CoverArt>> {
+    let store = (*store).clone();
+    run_blocking(move || crate::playlists::cover(&store, &id)).await
 }
 
 #[tauri::command]
-pub fn set_artist_image(store: State<Store>, key: String, path: String) -> AppResult<()> {
-    crate::playlists::set_artist_image(&store, &key, &path)
+pub async fn set_artist_image(store: State<'_, Store>, key: String, path: String) -> AppResult<()> {
+    let store = (*store).clone();
+    run_blocking(move || crate::playlists::set_artist_image(&store, &key, &path)).await
 }
 
 #[tauri::command]
-pub fn artist_image(store: State<Store>, key: String) -> AppResult<Option<CoverArt>> {
-    crate::playlists::artist_image(&store, &key)
+pub async fn artist_image(store: State<'_, Store>, key: String) -> AppResult<Option<CoverArt>> {
+    let store = (*store).clone();
+    run_blocking(move || crate::playlists::artist_image(&store, &key)).await
 }
 
 #[tauri::command]
@@ -464,8 +502,12 @@ pub fn remote_start(
 }
 
 #[tauri::command]
-pub fn remote_stop(remote: State<crate::remote::Remote>) -> crate::remote::RemoteStatus {
-    remote.stop()
+pub async fn remote_stop(
+    remote: State<'_, crate::remote::Remote>,
+) -> AppResult<crate::remote::RemoteStatus> {
+    // Async commands run off the main thread; joining the remote's threads
+    // here does not freeze the window.
+    Ok(remote.stop())
 }
 
 #[tauri::command]
@@ -500,11 +542,30 @@ pub async fn play_media(
     page_url: Option<String>,
 ) -> AppResult<PlayerSnapshot> {
     let player = (*player).clone();
+    let gen = player.bump_play_generation();
+    let watcher = player.clone();
     run_blocking(move || {
-        let source = crate::search::play_source(&url, page_url.as_deref()).to_string();
-        let path = crate::search::cache_media(&source)?;
-        let track = crate::search::track_for(&path, &title);
-        player.play_tracks(vec![track], None)
+        if crate::search::find_tool("ffmpeg").is_none() {
+            return Err(AppError::msg(
+                "ffmpeg is required to play search results. Install it with: sudo apt install ffmpeg",
+            ));
+        }
+        let cancel: Arc<dyn Fn() -> bool + Send + Sync> =
+            Arc::new(move || gen != watcher.play_generation());
+        crate::search::with_cancel(cancel, || {
+            let source = crate::search::play_source(&url, page_url.as_deref()).to_string();
+            let path = match crate::search::cache_media(&source) {
+                Ok(path) => path,
+                Err(_) if gen != player.play_generation() => return Ok(player.snapshot()),
+                Err(error) => return Err(error),
+            };
+            if gen != player.play_generation() {
+                // A newer play started while this one was downloading.
+                return Ok(player.snapshot());
+            }
+            let track = crate::search::track_for(&path, &title);
+            player.play_tracks(vec![track], None)
+        })
     })
     .await
 }

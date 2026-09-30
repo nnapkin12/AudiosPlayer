@@ -124,14 +124,21 @@ export function rgbToHex(value: string): string {
         .join("")}`,
     );
   }
-  const parts = trimmed.split(/[,\s/]+/).filter(Boolean).map(Number);
+  const parts = trimmed
+    .split(/[,\s/]+/)
+    .filter(Boolean)
+    .map(Number);
   if (parts.length < 3 || parts.some((part) => !Number.isFinite(part))) {
     return "#000000";
   }
   return normalizeHex(
     `#${parts
       .slice(0, 3)
-      .map((part) => Math.max(0, Math.min(255, Math.round(part))).toString(16).padStart(2, "0"))
+      .map((part) =>
+        Math.max(0, Math.min(255, Math.round(part)))
+          .toString(16)
+          .padStart(2, "0"),
+      )
       .join("")}`,
   );
 }
@@ -279,11 +286,7 @@ export function colorsForBuiltin(theme: string, accent: string): ThemeColors {
   return colors;
 }
 
-export function applyAppearance(
-  theme: string,
-  accent: string,
-  customThemes: CustomTheme[] = [],
-) {
+export function applyAppearance(theme: string, accent: string, customThemes: CustomTheme[] = []) {
   const root = document.documentElement;
   const custom = customThemes.find((item) => item.id === theme);
   if (custom) {

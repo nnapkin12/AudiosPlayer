@@ -6,14 +6,9 @@ import { ThemeBuilder } from "@/features/settings/ThemeBuilder";
 import { api, openExternal } from "@/lib/api";
 import { errorMessage } from "@/lib/format";
 import { GITHUB_URL, SVG_REPO_MARKS } from "@/lib/links";
-import {
-  ACCENTS,
-  THEMES,
-  newCustomTheme,
-  readThemeColors,
-  type CustomTheme,
-} from "@/lib/theme";
+import { ACCENTS, THEMES, newCustomTheme, readThemeColors, type CustomTheme } from "@/lib/theme";
 import { useAppStore } from "@/store/useAppStore";
+import { confirm } from "@/ui/confirm";
 
 const SECTIONS = [
   ["playback", "Playback"],
@@ -73,6 +68,14 @@ export function SettingsView() {
   }
 
   async function removeCustomTheme(id: string) {
+    const theme = customThemes.find((item) => item.id === id);
+    const ok = await confirm({
+      title: `Remove theme “${theme?.name ?? "Custom"}”?`,
+      body: "The saved colors are gone. Built-in themes are not affected.",
+      confirmLabel: "Remove theme",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       applySaved(await api.deleteCustomTheme(id));
     } catch (error) {
@@ -329,9 +332,21 @@ function VizColors({
 }) {
   return (
     <div className="flex flex-col gap-2 py-3">
-      <VizColor label="Main Color" value={main} onChange={(value) => onChange({ main: value, border, glow })} />
-      <VizColor label="Border Color" value={border} onChange={(value) => onChange({ main, border: value, glow })} />
-      <VizColor label="Glow Color" value={glow} onChange={(value) => onChange({ main, border, glow: value })} />
+      <VizColor
+        label="Main Color"
+        value={main}
+        onChange={(value) => onChange({ main: value, border, glow })}
+      />
+      <VizColor
+        label="Border Color"
+        value={border}
+        onChange={(value) => onChange({ main, border: value, glow })}
+      />
+      <VizColor
+        label="Glow Color"
+        value={glow}
+        onChange={(value) => onChange({ main, border, glow: value })}
+      />
     </div>
   );
 }

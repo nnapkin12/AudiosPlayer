@@ -1,8 +1,20 @@
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
-import { Pencil, Search, X } from "lucide-react";
-import { addToNewPlaylist, BrowseBack, LibraryNav, LibraryPage, PlaylistsPage } from "@/features/player/Playlists";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { MoreHorizontal, Pencil, Search, X } from "lucide-react";
+import {
+  addToNewPlaylist,
+  BrowseBack,
+  LibraryNav,
+  LibraryPage,
+  PlaylistsPage,
+} from "@/features/player/Playlists";
 import { PlayPauseIcon } from "@/features/shell/PlayPauseIcon";
-import { filterTracks, invalidateBrowse, locateMissing, openBrowsePage } from "@/features/player/browse";
+import { useTransport } from "@/features/shell/useTransport";
+import {
+  filterTracks,
+  invalidateBrowse,
+  locateMissing,
+  openBrowsePage,
+} from "@/features/player/browse";
 import { DiscoverView } from "@/features/player/DiscoverView";
 import { LibraryHome } from "@/features/player/LibraryHome";
 import { TrackList } from "@/features/player/TrackList";
@@ -19,6 +31,7 @@ import { PlaylistCover, dropPlaylistCover } from "@/lib/covers";
 import { baseName, errorMessage } from "@/lib/format";
 import type { Track } from "@/lib/types";
 import { useAppStore } from "@/store/useAppStore";
+import { confirm } from "@/ui/confirm";
 
 export function PlayerView() {
   const browse = useAppStore((state) => state.browse);
@@ -32,13 +45,17 @@ export function PlayerView() {
   const setLibraryRoots = useAppStore((state) => state.setLibraryRoots);
   const setPlaylists = useAppStore((state) => state.setPlaylists);
   const [listQuery, setListQuery] = useState("");
+  const renameLock = useRef(false);
+  const transport = useTransport();
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
 
   const playlist =
     browse.kind === "playlist" ? playlists.find((item) => item.id === browse.id) : null;
-  const currentInPage = Boolean(currentPath && pageTracks.some((track) => track.path === currentPath));
+  const currentInPage = Boolean(
+    currentPath && pageTracks.some((track) => track.path === currentPath),
+  );
   const showPause = currentInPage && playing;
 
   const browseKey =
@@ -50,10 +67,7 @@ export function PlayerView() {
     setDraftName(playlist?.name ?? "");
   }, [browseKey, playlist?.name]);
 
-  const visibleTracks = useMemo(
-    () => filterTracks(pageTracks, listQuery),
-    [pageTracks, listQuery],
-  );
+  const visibleTracks = useMemo(() => filterTracks(pageTracks, listQuery), [pageTracks, listQuery]);
   const missingHere = missing.filter((item) =>
     browse.kind === "playlist"
       ? item.scope === "playlist" && item.id === browse.id
@@ -84,16 +98,12 @@ export function PlayerView() {
     }
   }
 
-  async function playOrToggle() {
+  function playOrToggle() {
     if (currentInPage) {
-      try {
-        useAppStore.getState().applySnapshot(await api.toggle());
-      } catch (error) {
-        setStatus(errorMessage(error, "Could not control playback"));
-      }
+      transport.toggle();
       return;
     }
-    await playTracks();
+    void playTracks();
   }
 
   async function playTracks(startPath?: string) {
@@ -104,26 +114,26 @@ export function PlayerView() {
 
   async function playTracksFrom(tracks: Track[], startPath?: string) {
     if (tracks.length === 0) return;
-    try {
-      useAppStore.getState().applySnapshot(await api.playTracks(tracks, startPath));
-    } catch (error) {
-      setStatus(errorMessage(error, "Could not play"));
-    }
+    transport.playTracks(tracks, startPath);
   }
 
   async function commitRename() {
     if (!playlist) return;
+    if (renameLock.current) return;
     const next = draftName.trim();
     if (!next || next === playlist.name) {
       setDraftName(playlist.name);
       setRenaming(false);
       return;
     }
+    renameLock.current = true;
     try {
       setPlaylists(await api.renamePlaylist(playlist.id, next));
       setRenaming(false);
     } catch (error) {
       setStatus(errorMessage(error, "Could not rename playlist"));
+    } finally {
+      renameLock.current = false;
     }
   }
 
@@ -157,17 +167,23 @@ export function PlayerView() {
 
   function trackMenu(track: Track, queue: Track[] = pageTracks): MenuEntry[] {
     return [
-      { kind: "action", action: { label: "Play", onClick: () => void playTracksFrom(queue, track.path) } },
+      {
+        kind: "action",
+        action: { label: "Play", onClick: () => void playTracksFrom(queue, track.path) },
+      },
       {
         kind: "action",
         action: {
           label: "Add to queue",
           onClick: () => {
-            void api.enqueuePath(track.path).then((snapshot) => {
-              useAppStore.getState().applySnapshot(snapshot);
-            }).catch((error) => {
-              setStatus(errorMessage(error, "Could not add to queue"));
-            });
+            void api
+              .enqueuePath(track.path)
+              .then((snapshot) => {
+                useAppStore.getState().applySnapshot(snapshot);
+              })
+              .catch((error) => {
+                setStatus(errorMessage(error, "Could not add to queue"));
+              });
           },
         },
       },
@@ -185,13 +201,18 @@ export function PlayerView() {
         actions: playlists.map((item) => ({
           label: item.name,
           onClick: () => {
-            void api.addToPlaylist(item.id, [track.path]).then((list) => {
-              setPlaylists(list);
-              invalidateBrowse("playlist", item.id);
-              if (browse.kind === "playlist" && browse.id === item.id) {
-                void openBrowsePage({ kind: "playlist", id: item.id }, true);
-              }
-            });
+            void api
+              .addToPlaylist(item.id, [track.path])
+              .then((list) => {
+                setPlaylists(list);
+                invalidateBrowse("playlist", item.id);
+                if (browse.kind === "playlist" && browse.id === item.id) {
+                  void openBrowsePage({ kind: "playlist", id: item.id }, true);
+                }
+              })
+              .catch((error) => {
+                setStatus(errorMessage(error, "Could not add to playlist"));
+              });
           },
         })),
       },
@@ -258,7 +279,7 @@ export function PlayerView() {
   return (
     <section className="flex min-h-0 flex-1">
       <div className="player-nav flex shrink-0 flex-col border-r border-app-line">
-        <div className="px-3 pb-2 pt-3">
+        <div className="player-nav-title px-3 pb-2 pt-3">
           <button
             type="button"
             onClick={() => void openBrowsePage({ kind: "home" })}
@@ -274,7 +295,7 @@ export function PlayerView() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {browse.kind === "home" ? (
-          <LibraryHome />
+          <LibraryHome onAddFolder={() => void addFolder()} onOpenFile={() => void openFile()} />
         ) : browse.kind === "library" ? (
           <LibraryPage
             onMenu={openMenu}
@@ -331,42 +352,97 @@ export function PlayerView() {
                     </span>
                   </button>
                   <div className="mt-2">
-                  <p className="text-[13px] font-semibold uppercase tracking-[0.06em] text-app-muted">
-                    Playlist
-                  </p>
-                  {renaming ? (
-                    <form
-                      className="mt-1 w-full max-w-md"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void commitRename();
-                      }}
-                    >
-                      <input
-                        autoFocus
-                        value={draftName}
-                        onChange={(event) => setDraftName(event.target.value)}
-                        onBlur={() => void commitRename()}
-                        className="w-full rounded-md border border-app-border bg-app px-2 py-1 text-[22px] font-semibold text-app-text"
-                      />
-                    </form>
-                  ) : (
-                    <div className="mt-1 flex items-center gap-2">
-                      <p className="truncate text-[22px] font-semibold text-app-text">{title}</p>
-                      <button
-                        type="button"
-                        title="Rename playlist"
-                        onClick={() => {
-                          setDraftName(playlist.name);
-                          setRenaming(true);
+                    <p className="text-[13px] font-semibold uppercase tracking-[0.06em] text-app-muted">
+                      Playlist
+                    </p>
+                    {renaming ? (
+                      <form
+                        className="mt-1 w-full max-w-md"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void commitRename();
                         }}
-                        className="rounded-md p-1 text-app-muted hover:bg-app-hover hover:text-app-text"
                       >
-                        <Pencil size={14} />
-                      </button>
-                    </div>
-                  )}
-                  <p className="text-[14px] font-medium text-app-muted">{countLabel}</p>
+                        <input
+                          autoFocus
+                          value={draftName}
+                          onChange={(event) => setDraftName(event.target.value)}
+                          onBlur={() => void commitRename()}
+                          className="w-full rounded-md border border-app-border bg-app px-2 py-1 text-[22px] font-semibold text-app-text"
+                        />
+                      </form>
+                    ) : (
+                      <div className="mt-1 flex items-center gap-2">
+                        <p className="truncate text-[22px] font-semibold text-app-text">{title}</p>
+                        <button
+                          type="button"
+                          title="Rename playlist"
+                          aria-label="Rename playlist"
+                          onClick={() => {
+                            setDraftName(playlist.name);
+                            setRenaming(true);
+                          }}
+                          className="rounded-md p-1 text-app-muted hover:bg-app-hover hover:text-app-text"
+                        >
+                          <Pencil size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Playlist menu"
+                          aria-label="Playlist menu"
+                          onClick={(event) =>
+                            openMenu(event, [
+                              {
+                                kind: "action",
+                                action: {
+                                  label: "Change picture",
+                                  onClick: () => void changeCover(),
+                                },
+                              },
+                              ...(playlist.hasCover
+                                ? ([
+                                    {
+                                      kind: "action",
+                                      action: {
+                                        label: "Remove picture",
+                                        onClick: () => void removeCover(),
+                                      },
+                                    },
+                                  ] satisfies MenuEntry[])
+                                : []),
+                              {
+                                kind: "action",
+                                action: {
+                                  label: "Rename",
+                                  onClick: () => {
+                                    setDraftName(playlist.name);
+                                    setRenaming(true);
+                                  },
+                                },
+                              },
+                              {
+                                kind: "action",
+                                action: {
+                                  label: "Add songs",
+                                  onClick: () => void pickAudioFilesInto(playlist.id),
+                                },
+                              },
+                              {
+                                kind: "action",
+                                action: {
+                                  label: "Add album",
+                                  onClick: () => void pickFolderInto(playlist.id),
+                                },
+                              },
+                            ])
+                          }
+                          className="rounded-md p-1 text-app-muted hover:bg-app-hover hover:text-app-text"
+                        >
+                          <MoreHorizontal size={16} />
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-[14px] font-medium text-app-muted">{countLabel}</p>
                   </div>
                   <div className="mt-2 flex flex-wrap justify-center gap-2">
                     <button
@@ -428,16 +504,19 @@ export function PlayerView() {
             {missingHere.length > 0 ? (
               <div className="mx-5 mb-3 flex items-center justify-between gap-3 rounded-xl border border-app-border bg-app-raised px-4 py-3">
                 <p className="text-[14px] font-medium leading-5 text-app-text">
-                  Can't find {missingHere.length === 1 ? missingHere[0].label : `${missingHere.length} items`}.
+                  Can't find{" "}
+                  {missingHere.length === 1 ? missingHere[0].label : `${missingHere.length} items`}.
                   Point Audios! at the song or album.
                 </p>
                 <button
                   type="button"
                   onClick={() => {
                     const album = missingHere.find((item) => item.kind === "dir") ?? missingHere[0];
-                    void locateMissing(album, missingHere.length > 1 || album.kind === "dir").catch((error) => {
-                      setStatus(errorMessage(error, "Couldn't update that path"));
-                    });
+                    void locateMissing(album, missingHere.length > 1 || album.kind === "dir").catch(
+                      (error) => {
+                        setStatus(errorMessage(error, "Couldn't update that path"));
+                      },
+                    );
                   }}
                   className="shrink-0 rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg"
                 >
@@ -448,7 +527,15 @@ export function PlayerView() {
             {pageTracks.length > 0 || listQuery ? (
               <ListSearch value={listQuery} onChange={setListQuery} />
             ) : null}
-            {pageTracks.length === 0 && !pageLoading ? (
+            {pageTracks.length === 0 && pageLoading ? (
+              <div className="px-5" aria-busy="true">
+                <div className="space-y-2">
+                  {Array.from({ length: 6 }, (_, index) => (
+                    <div key={index} className="h-12 animate-pulse rounded-lg bg-app-hover" />
+                  ))}
+                </div>
+              </div>
+            ) : pageTracks.length === 0 && !pageLoading ? (
               <div className="px-5">
                 <div className="rounded-xl border border-dashed border-app-border bg-app-raised/60 px-4 py-6 text-[14px] font-medium leading-6 text-app-muted">
                   {browse.kind === "playlist"
@@ -479,13 +566,7 @@ export function PlayerView() {
   );
 }
 
-function ListSearch({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-}) {
+function ListSearch({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   return (
     <div className="px-5 pb-3">
       <label className="relative block">
@@ -515,28 +596,56 @@ function ListSearch({
 }
 
 async function removePlaylist(playlistId: string) {
-  const list = await api.deletePlaylist(playlistId);
-  dropPlaylistCover(playlistId);
-  useAppStore.getState().setPlaylists(list);
-  await openBrowsePage({ kind: "playlists" });
+  const store = useAppStore.getState();
+  const playlist = store.playlists.find((item) => item.id === playlistId);
+  const name = playlist?.name?.trim() || "this playlist";
+  const count = playlist?.items.length ?? 0;
+  const ok = await confirm({
+    title: `Delete “${name}”?`,
+    body: [
+      count > 0
+        ? `The playlist and its ${count} item${count === 1 ? "" : "s"} are removed from Audios!.`
+        : "The playlist is removed from Audios!.",
+      "Your music files are not touched.",
+    ],
+    confirmLabel: "Delete playlist",
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const list = await api.deletePlaylist(playlistId);
+    dropPlaylistCover(playlistId);
+    useAppStore.getState().setPlaylists(list);
+    await openBrowsePage({ kind: "playlists" });
+  } catch (error) {
+    store.setStatus(errorMessage(error, "Could not delete playlist"));
+  }
 }
 
 async function pickAudioFilesInto(playlistId: string) {
-  const paths = await pickAudioFiles();
-  if (paths.length === 0) return;
-  const list = await api.addToPlaylist(playlistId, paths);
-  dropPlaylistCover(playlistId);
-  useAppStore.getState().setPlaylists(list);
-  invalidateBrowse("playlist", playlistId);
-  await openBrowsePage({ kind: "playlist", id: playlistId }, true);
+  try {
+    const paths = await pickAudioFiles();
+    if (paths.length === 0) return;
+    const list = await api.addToPlaylist(playlistId, paths);
+    dropPlaylistCover(playlistId);
+    useAppStore.getState().setPlaylists(list);
+    invalidateBrowse("playlist", playlistId);
+    await openBrowsePage({ kind: "playlist", id: playlistId }, true);
+  } catch (error) {
+    useAppStore.getState().setStatus(errorMessage(error, "Could not add songs"));
+  }
 }
 
 async function pickFolderInto(playlistId: string) {
-  const folder = await pickFolder("Add album");
-  if (!folder) return;
-  const list = await api.addToPlaylist(playlistId, [folder]);
-  dropPlaylistCover(playlistId);
-  useAppStore.getState().setPlaylists(list);
-  invalidateBrowse("playlist", playlistId);
-  await openBrowsePage({ kind: "playlist", id: playlistId }, true);
+  try {
+    const folder = await pickFolder("Add album");
+    if (!folder) return;
+    const list = await api.addToPlaylist(playlistId, [folder]);
+    dropPlaylistCover(playlistId);
+    useAppStore.getState().setPlaylists(list);
+    invalidateBrowse("playlist", playlistId);
+    await openBrowsePage({ kind: "playlist", id: playlistId }, true);
+  } catch (error) {
+    useAppStore.getState().setStatus(errorMessage(error, "Could not add album"));
+  }
 }

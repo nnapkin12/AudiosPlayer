@@ -58,6 +58,11 @@ impl Queue {
         self.active_user.is_none() && self.tracks.is_empty()
     }
 
+    /// Songs waiting in the "play next" list.
+    pub fn user_queue_len(&self) -> usize {
+        self.user_queue.len()
+    }
+
     /// Install a new context and drop anything waiting in the user queue.
     pub fn replace(&mut self, tracks: Vec<Track>, start: usize) {
         self.user_queue.clear();

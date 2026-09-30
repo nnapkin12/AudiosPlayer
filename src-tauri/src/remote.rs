@@ -6,14 +6,14 @@
 //! play by index id. Playlist play uses a playlist id and a song index.
 //! The phone never sends a filesystem path.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,9 @@ const MAX_CONNS: usize = 24;
 const SEARCH_LIMIT: usize = 24;
 const HEADER_LIMIT: usize = 8 * 1024;
 const BODY_LIMIT: usize = 4 * 1024;
+const REQUEST_DEADLINE: Duration = Duration::from_secs(8);
+const CODE_FAILS: u32 = 8;
+const CODE_LOCK: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,10 +93,16 @@ struct Shared {
     qr_svg: String,
     stop: Arc<AtomicBool>,
     inflight: AtomicUsize,
+    lockout: Mutex<HashMap<IpAddr, Strike>>,
     catalog: Arc<Catalog>,
     art: Arc<Art>,
     live: Arc<Live>,
     book: Arc<Book>,
+}
+
+struct Strike {
+    fails: u32,
+    locked_until: Option<Instant>,
 }
 
 struct Catalog {
@@ -287,11 +296,7 @@ impl Remote {
             }
         }
 
-        let listener = bind_listener()?;
-        let port = listener
-            .local_addr()
-            .map_err(|_| AppError::msg("Could not open a port for the web remote"))?
-            .port();
+        let (port, listeners) = bind_listeners()?;
         let code = pairing_code();
         let urls = lan_urls(port, &code);
         let url = urls.first().cloned().unwrap_or_default();
@@ -318,6 +323,7 @@ impl Remote {
             qr_svg,
             stop: Arc::new(AtomicBool::new(false)),
             inflight: AtomicUsize::new(0),
+            lockout: Mutex::new(HashMap::new()),
             catalog: Arc::new(Catalog {
                 ready: AtomicBool::new(false),
                 entries: Mutex::new(Vec::new()),
@@ -345,10 +351,13 @@ impl Remote {
         });
 
         let mut joins = Vec::new();
-        joins.push(spawn_named("audios-remote", {
-            let shared = Arc::clone(&shared);
-            move || accept_loop(listener, shared)
-        }));
+        for listener in listeners {
+            joins.push(spawn_named("audios-remote", {
+                let shared = Arc::clone(&shared);
+                let app = self.app.clone();
+                move || accept_loop(listener, shared, app)
+            }));
+        }
         joins.push(spawn_named("audios-remote-live", {
             let shared = Arc::clone(&shared);
             move || publish_loop(shared)
@@ -680,13 +689,57 @@ fn spawn_named(name: &str, work: impl FnOnce() + Send + 'static) -> JoinHandle<(
         .expect(name)
 }
 
-fn bind_listener() -> AppResult<TcpListener> {
-    TcpListener::bind(("0.0.0.0", PREFERRED_PORT))
-        .or_else(|_| TcpListener::bind(("0.0.0.0", 0)))
-        .map_err(|_| AppError::msg("Could not open a port for the web remote"))
+fn bind_listeners() -> AppResult<(u16, Vec<TcpListener>)> {
+    let mut listeners = Vec::new();
+    let mut port = PREFERRED_PORT;
+    for ip in private_bind_ips() {
+        let try_port = if listeners.is_empty() {
+            PREFERRED_PORT
+        } else {
+            port
+        };
+        match TcpListener::bind((ip.as_str(), try_port)) {
+            Ok(listener) => {
+                if listeners.is_empty() {
+                    port = listener
+                        .local_addr()
+                        .map_err(|_| AppError::msg("Could not open a port for the web remote"))?
+                        .port();
+                }
+                listeners.push(listener);
+            }
+            Err(_) if listeners.is_empty() => {
+                if let Ok(listener) = TcpListener::bind((ip.as_str(), 0)) {
+                    port = listener
+                        .local_addr()
+                        .map_err(|_| AppError::msg("Could not open a port for the web remote"))?
+                        .port();
+                    listeners.push(listener);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    if listeners.is_empty() {
+        return Err(AppError::msg("Could not open a port for the web remote"));
+    }
+    Ok((port, listeners))
 }
 
-fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
+fn private_bind_ips() -> Vec<String> {
+    let mut ips =
+        fib_local_ipv4(&std::fs::read_to_string("/proc/net/fib_trie").unwrap_or_default());
+    if let Some(routed) = route_ipv4() {
+        ips.retain(|ip| ip != &routed);
+        ips.insert(0, routed);
+    }
+    if !ips.iter().any(|ip| ip == "127.0.0.1") {
+        ips.push("127.0.0.1".into());
+    }
+    ips
+}
+
+fn accept_loop(listener: TcpListener, shared: Arc<Shared>, app: AppHandle) {
     loop {
         if shared.stop.load(Ordering::Relaxed) {
             break;
@@ -702,7 +755,11 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
                     .spawn(move || handle_client(stream, addr, &shared));
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
+            Err(_) => {
+                shared.stop.store(true, Ordering::Relaxed);
+                let _ = app.emit("remote://status", &shared.status());
+                break;
+            }
         }
     }
 }
@@ -832,7 +889,18 @@ impl Drop for Inflight<'_> {
 
 fn handle_client(mut stream: TcpStream, addr: SocketAddr, shared: &Shared) {
     let _ = stream.set_nodelay(true);
-    if shared.inflight.load(Ordering::Relaxed) >= MAX_CONNS {
+    if locked_out(&shared.lockout, addr.ip()) {
+        let _ = write_text(
+            &mut stream,
+            "429 Too Many Requests",
+            "text/plain; charset=utf-8",
+            "Too many tries. Wait and scan the QR again.",
+        );
+        return;
+    }
+    let prev = shared.inflight.fetch_add(1, Ordering::SeqCst);
+    if prev >= MAX_CONNS {
+        shared.inflight.fetch_sub(1, Ordering::SeqCst);
         let _ = write_text(
             &mut stream,
             "503 Service Unavailable",
@@ -841,13 +909,15 @@ fn handle_client(mut stream: TcpStream, addr: SocketAddr, shared: &Shared) {
         );
         return;
     }
-    shared.inflight.fetch_add(1, Ordering::Relaxed);
     let _slot = Inflight(&shared.inflight);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(8)));
-    let Ok(request) = read_request(&mut stream) else {
+    let deadline = Instant::now() + REQUEST_DEADLINE;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let _ = stream.set_read_timeout(Some(remaining.max(Duration::from_millis(50))));
+    let Ok(request) = read_request(&mut stream, deadline) else {
         return;
     };
     if !query_code(&request).is_some_and(|code| same_code(code, &shared.code)) {
+        remember_fail(&shared.lockout, addr.ip());
         let _ = write_text(
             &mut stream,
             "404 Not Found",
@@ -856,6 +926,7 @@ fn handle_client(mut stream: TcpStream, addr: SocketAddr, shared: &Shared) {
         );
         return;
     }
+    remember_ok(&shared.lockout, addr.ip());
     let result = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") => write_text(&mut stream, "200 OK", "text/html; charset=utf-8", PAGE),
         ("GET", "/events") => serve_events(stream, addr, &request, shared),
@@ -1048,10 +1119,16 @@ fn apply_control(shared: &Shared, body: &[u8]) -> AppResult<WireNow> {
     Ok(shared.wire_now())
 }
 
-fn read_request(stream: &mut TcpStream) -> std::io::Result<Request> {
+fn read_request(stream: &mut TcpStream, deadline: Instant) -> std::io::Result<Request> {
     let mut buf = Vec::with_capacity(512);
     let mut tmp = [0u8; 512];
     let header_end = loop {
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request deadline",
+            ));
+        }
         if buf.len() > HEADER_LIMIT {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1101,6 +1178,12 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Request> {
         ));
     }
     while body.len() < length {
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request deadline",
+            ));
+        }
         let read = stream.read(&mut tmp)?;
         if read == 0 {
             break;
@@ -1326,7 +1409,9 @@ fn percent_decode(raw: &str) -> String {
                 index += 1;
             }
             b'%' if index + 2 < bytes.len() => {
-                let hex = &raw[index + 1..index + 3];
+                // Slice bytes, not the str: a multibyte character after `%`
+                // would make a str slice panic on a non-char boundary.
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
                 if let Ok(value) = u8::from_str_radix(hex, 16) {
                     out.push(value);
                     index += 3;
@@ -1380,6 +1465,34 @@ fn device_name(ua: &str) -> String {
     }
 }
 
+fn locked_out(map: &Mutex<HashMap<IpAddr, Strike>>, ip: IpAddr) -> bool {
+    let now = Instant::now();
+    let map = map.lock().unwrap_or_else(|e| e.into_inner());
+    map.get(&ip)
+        .and_then(|strike| strike.locked_until)
+        .is_some_and(|until| until > now)
+}
+
+fn remember_fail(map: &Mutex<HashMap<IpAddr, Strike>>, ip: IpAddr) {
+    let now = Instant::now();
+    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+    let strike = map.entry(ip).or_insert(Strike {
+        fails: 0,
+        locked_until: None,
+    });
+    if strike.locked_until.is_some_and(|until| until > now) {
+        return;
+    }
+    strike.fails = strike.fails.saturating_add(1);
+    if strike.fails >= CODE_FAILS {
+        strike.locked_until = Some(now + CODE_LOCK);
+    }
+}
+
+fn remember_ok(map: &Mutex<HashMap<IpAddr, Strike>>, ip: IpAddr) {
+    map.lock().unwrap_or_else(|e| e.into_inner()).remove(&ip);
+}
+
 fn lan_urls(port: u16, code: &str) -> Vec<String> {
     let mut ips =
         fib_local_ipv4(&std::fs::read_to_string("/proc/net/fib_trie").unwrap_or_default());
@@ -1417,10 +1530,8 @@ fn fib_local_ipv4(text: &str) -> Vec<String> {
         if trimmed.contains("host LOCAL") {
             if let Some(ip) = last.take() {
                 if let Ok(addr) = ip.parse::<Ipv4Addr>() {
-                    if is_private_v4(addr) {
-                        if !out.iter().any(|have| have == ip) {
-                            out.push(ip.to_string());
-                        }
+                    if is_private_v4(addr) && !out.iter().any(|have| have == ip) {
+                        out.push(ip.to_string());
                     }
                 }
             }
@@ -1527,6 +1638,17 @@ mod tests {
     }
 
     #[test]
+    fn query_survives_multibyte_after_percent() {
+        // Any device on the LAN can send this before the code is checked.
+        let pairs = parse_query("code=%€&q=%e2%82%ac%");
+        assert_eq!(pairs[0].0, "code");
+        assert_eq!(pairs[1], ("q".into(), "€%".into()));
+        assert_eq!(percent_decode("%é"), "%é");
+        assert_eq!(percent_decode("%"), "%");
+        assert_eq!(percent_decode("%4"), "%4");
+    }
+
+    #[test]
     fn qr_is_svg() {
         let svg = qr_svg("http://192.168.1.5:47321/?code=abc123").unwrap();
         assert!(svg.starts_with("<svg"));
@@ -1567,5 +1689,29 @@ mod tests {
         assert!(same_code("abc123", "abc123"));
         assert!(!same_code("abc123", "abc124"));
         assert!(!same_code("abc", "abcd"));
+    }
+
+    #[test]
+    fn eight_bad_codes_lock_the_ip() {
+        let map = Mutex::new(HashMap::new());
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 9));
+        for _ in 0..CODE_FAILS - 1 {
+            remember_fail(&map, ip);
+            assert!(!locked_out(&map, ip));
+        }
+        remember_fail(&map, ip);
+        assert!(locked_out(&map, ip));
+        remember_ok(&map, ip);
+        assert!(!locked_out(&map, ip));
+    }
+
+    #[test]
+    fn bind_list_always_includes_localhost() {
+        let ips = private_bind_ips();
+        assert!(ips.iter().any(|ip| ip == "127.0.0.1"));
+        assert!(ips.iter().all(|ip| {
+            ip.parse::<Ipv4Addr>()
+                .is_ok_and(|addr| addr.is_loopback() || is_private_v4(addr))
+        }));
     }
 }

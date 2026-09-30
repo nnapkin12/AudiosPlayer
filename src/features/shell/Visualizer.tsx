@@ -7,6 +7,8 @@ const BARS = 32;
 export function Visualizer({ variant }: { variant: "bar" | "stage" }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const playing = useAppStore((state) => state.snapshot?.playing ?? false);
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
   const main = useAppStore((state) => state.vizMain);
   const border = useAppStore((state) => state.vizBorder);
   const glow = useAppStore((state) => state.vizGlow);
@@ -37,7 +39,7 @@ export function Visualizer({ variant }: { variant: "bar" | "stage" }) {
       const rise = 1 - Math.exp(-dt / 0.09);
       const fall = 1 - Math.exp(-dt / 0.28);
       for (let index = 0; index < BARS; index += 1) {
-        const target = playing ? bands[index] : 0;
+        const target = playingRef.current ? bands[index] : 0;
         const step = target > shown[index] ? rise : fall;
         shown[index] += (target - shown[index]) * step;
       }
@@ -91,7 +93,7 @@ export function Visualizer({ variant }: { variant: "bar" | "stage" }) {
       frame = requestAnimationFrame(loop);
     };
 
-    if (playing && document.visibilityState !== "hidden") {
+    if (document.visibilityState !== "hidden") {
       frame = requestAnimationFrame(loop);
     } else {
       paint();
@@ -103,17 +105,21 @@ export function Visualizer({ variant }: { variant: "bar" | "stage" }) {
         frame = 0;
         return;
       }
-      if (playing && frame === 0) frame = requestAnimationFrame(loop);
+      if (frame === 0) frame = requestAnimationFrame(loop);
     };
     document.addEventListener("visibilitychange", onVisibility);
+    const parent = canvas.parentElement;
+    const resize = parent ? new ResizeObserver(() => paint()) : null;
+    if (parent) resize?.observe(parent);
 
     return () => {
       stopped = true;
       cancelAnimationFrame(frame);
       unlisten();
       document.removeEventListener("visibilitychange", onVisibility);
+      resize?.disconnect();
     };
-  }, [border, glow, main, playing]);
+  }, [border, glow, main]);
 
   return (
     <div className={variant === "bar" ? "viz-bar" : "viz-stage"} aria-hidden>

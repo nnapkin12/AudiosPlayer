@@ -35,14 +35,18 @@ export function VirtualList<T>({
 
   useEffect(() => () => cancelAnimationFrame(pending.current), []);
 
-  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
   const visible = Math.ceil((height || 1) / rowHeight) + overscan * 2;
+  const start = Math.min(
+    Math.max(0, items.length - visible),
+    Math.max(0, Math.floor(scrollTop / rowHeight) - overscan),
+  );
   const end = Math.min(items.length, start + visible);
   const slice = items.slice(start, end);
 
   return (
     <div
       ref={ref}
+      role="list"
       className={className}
       onPointerLeave={onPointerLeave}
       onScroll={(event) => {
@@ -60,6 +64,7 @@ export function VirtualList<T>({
           return (
             <div
               key={getKey(item, index)}
+              role="listitem"
               style={{
                 position: "absolute",
                 top: index * rowHeight,

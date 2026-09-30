@@ -81,7 +81,7 @@ export function dropCover(path: string): void {
 }
 
 export function cachedCover(path: string): string | null | undefined {
-  return cache.has(path) ? cache.get(path) ?? null : undefined;
+  return cache.has(path) ? (cache.get(path) ?? null) : undefined;
 }
 
 export function loadCoverThumb(path: string): Promise<string | null> {
@@ -142,20 +142,14 @@ export function loadCoverPicture(path: string): Promise<string | null> {
   return request;
 }
 
-export function CoverPicture({
-  path,
-  className,
-}: {
-  path: string;
-  className?: string;
-}) {
+export function CoverPicture({ path, className }: { path: string; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [src, setSrc] = useState<string | null | undefined>(() =>
-    pictureCache.has(path) ? pictureCache.get(path) ?? null : undefined,
+    pictureCache.has(path) ? (pictureCache.get(path) ?? null) : undefined,
   );
 
   useEffect(() => {
-    setSrc(pictureCache.has(path) ? pictureCache.get(path) ?? null : undefined);
+    setSrc(pictureCache.has(path) ? (pictureCache.get(path) ?? null) : undefined);
   }, [path]);
 
   useEffect(() => {
@@ -188,13 +182,7 @@ export function CoverPicture({
   );
 }
 
-export function CoverThumb({
-  path,
-  className,
-}: {
-  path: string;
-  className?: string;
-}) {
+export function CoverThumb({ path, className }: { path: string; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [src, setSrc] = useState<string | null | undefined>(() => cachedCover(path));
 
@@ -278,11 +266,11 @@ export function PlaylistCover({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [src, setSrc] = useState<string | null | undefined>(() =>
-    playlistCache.has(id) ? playlistCache.get(id) ?? null : undefined,
+    playlistCache.has(id) ? (playlistCache.get(id) ?? null) : undefined,
   );
 
   useEffect(() => {
-    setSrc(playlistCache.has(id) ? playlistCache.get(id) ?? null : undefined);
+    setSrc(playlistCache.has(id) ? (playlistCache.get(id) ?? null) : undefined);
   }, [id]);
 
   useEffect(() => {

@@ -33,6 +33,9 @@ Disk, audio, child processes, and tags live in Rust. The webview renders state a
 - `Remote` is created idle. Nothing listens until Settings calls `remote_start`.
 - `watch::spawn` follows library and playlist folders.
 - An AppImage writes its own desktop entry. A `.deb` already has one.
+- Command-line files and folders (`xdg-open song.mp3`, Open With) go through `launch.rs`. A second instance is refused by `tauri-plugin-single-instance` and the paths open in the running window.
+
+To remove an AppImage menu entry: delete `~/.local/share/applications/com.audios.desktop.desktop` and `~/.local/share/icons/hicolor/128x128/apps/com.audios.desktop.png`, then run `update-desktop-database ~/.local/share/applications` if that tool is installed.
 
 ## Frontend
 
@@ -51,8 +54,8 @@ Playback and library:
 - [`src-tauri/src/player/`](../src-tauri/src/player/) — `PlayerEngine` (rodio + Symphonia), scan, queue, `play_folder_file`.
 - [`src-tauri/src/eq.rs`](../src-tauri/src/eq.rs) — the only EQ. Ten biquads (peak, low shelf, high shelf). Settings → Equalizer edits that one list: tone sliders change gain, Advanced edits frequency, Q, and type. Do not add a second graphic processor.
 - [`src-tauri/src/library.rs`](../src-tauri/src/library.rs) — folder roots stored in `state.json`.
-- [`src-tauri/src/watch.rs`](../src-tauri/src/watch.rs) — `notify` on those folders and on playlist folders. After a short quiet period it syncs playlists, relinks, and emits `library://changed`.
-- [`src-tauri/src/relink.rs`](../src-tauri/src/relink.rs) — a moved file or folder is retargeted when the name is unique. Otherwise it stays listed so the UI can ask to Locate it.
+- [`src-tauri/src/watch.rs`](../src-tauri/src/watch.rs) — `notify` on library and playlist folders. Failed watches are retried once a minute, not every two seconds. Past `max_user_watches` the status line explains the inotify limit. After a short quiet period it syncs playlists, relinks, and emits `library://changed`.
+- [`src-tauri/src/relink.rs`](../src-tauri/src/relink.rs) — a moved file or folder is retargeted when the name is unique **inside library roots** (not `$HOME` or a root's parent). Otherwise it stays listed so the UI can ask to Locate it.
 - [`src-tauri/src/playlists.rs`](../src-tauri/src/playlists.rs) — names, items, covers.
 
 Other native work:
@@ -66,7 +69,9 @@ Other native work:
 - [`src-tauri/src/desktop.rs`](../src-tauri/src/desktop.rs) — AppImage menu entry under `~/.local/share/applications`.
 - [`src-tauri/src/commands/mod.rs`](../src-tauri/src/commands/mod.rs) — IPC only. The remote does not go through these commands. It calls `Player` directly.
 
-Config uses the `directories` crate: qualifier `com`, org `audios`, app `Audios` (typically `~/.config/audios/Audios/state.json`). Playlist pictures sit next to that file in `playlist-covers/`. Search temps are `~/.cache/audios/search/`. Playback transcodes are `~/.cache/audios/playback/`. The Tauri bundle id is `com.audios.desktop`. Those names do not match. Changing either one moves user data.
+A `state.json` that exists but does not parse is moved aside as `state.json.corrupt-<unix time>` and the app starts with defaults; the status line says so for the rest of the session. A failed save is reported the same way and cleared once a save succeeds. Nothing ever overwrites a file it could not read.
+
+Config uses the `directories` crate: qualifier `com`, org `audios`, app `Audios` (on Linux `~/.config/audios/state.json`). Playlist pictures sit next to that file in `playlist-covers/`. Search temps are `~/.cache/audios/search/`. Playback transcodes are `~/.cache/audios/playback/`. The Tauri bundle id is `com.audios.desktop`. Those names do not match. Changing either one moves user data.
 
 ## Library and playlists
 
@@ -86,7 +91,7 @@ A playlist item is a file or a folder.
 
 The phone is a controller. Sound stays on this computer. The page is [`remote_page.html`](../src-tauri/src/remote_page.html), compiled into the binary. It is not the React app, and it does not serve yt-dlp.
 
-`remote_start` binds `0.0.0.0` on port 47321, or an ephemeral port if that one is taken. A pairing code is generated for that run. The desktop shows LAN URLs and a QR code for the first one. `remote://status` updates Settings. Stop joins the threads and drops the song index and the cached cover.
+`remote_start` binds each private IPv4 address (and localhost) on port 47321, or an ephemeral port if that one is taken. It does not bind `0.0.0.0`, so a VPN or public interface is not a listener. A pairing code is generated for that run. Eight wrong codes from one IP locks that IP out for ten minutes. Each request has an 8 s wall-clock deadline. The desktop shows LAN URLs and a QR code for the first one. `remote://status` updates Settings. If the accept loop dies, `stop` is set and Settings is told it is idle. Stop joins the threads and drops the song index and the cached cover.
 
 Three threads run while it is up: accept, now-playing publish, and library index.
 
@@ -108,15 +113,29 @@ The index is built from library roots and playlist songs when the remote starts,
 
 Rodio keeps the output stream open and queues Symphonia decoders. Output uses the system default device. On current Linux that is PipeWire’s ALSA plugin. PulseAudio still works when it is the default.
 
-Each file is an `EqSource` on the `audios-rodio` thread. Sample order is **decode → EQ → sink speed → sink volume**. Volume on the sink is volume × mute × ReplayGain. Speed is rodio varispeed: tempo and pitch move together. 0.5× is one octave down, 2× is one octave up. Callers pass a position in the recording. The engine converts that into sink time, because rodio seeks in output time.
+Each file is an `EqSource` on the `audios-rodio` thread. Sample order is **decode → EQ → sink speed → sink volume**. Volume on the sink is volume × mute × ReplayGain. Speed is rodio varispeed: tempo and pitch move together. 0.5× is one octave down, 2× is one octave up. The seek bar shows file time, counted from decoded frames, so a speed change does not jump it. User seeks pass that file time through to the decoder.
 
 Coefficients are calculated in 64-bit, and the filter recursion stays 64-bit, so a low shelf at a high sample rate does not quantize into feedback. Samples handed to the sink are 32-bit. The curve drawn in Settings is the magnitude of that same cascade. These are the minimum-phase biquads AutoEQ publishes, so a pasted profile matches that correction. Overlapping bands can sum above any single gain. Auto level uses the peak of the combined curve.
 
-Gapless appends the next file about 1.6s before the current track ends (`position + 1600 >= duration`). That next source has its own filter memory, so song A’s bass does not leak into song B. Seek resets the current source’s biquads. Slider changes swap coefficients on the shared EQ params and do not rebuild the sink.
+Gapless appends the next file about 1.6s before the current track ends. The queue moves when that appended source actually starts (a decoder hook), not when the sink looks almost empty. That next source has its own filter memory, so song A’s bass does not leak into song B. Seek resets the current source’s biquads. Slider changes swap coefficients on the shared EQ params and do not rebuild the sink.
 
 EQ off, and Flat, bypass the filters. EQ never writes files or tags. User presets live in `state.json` next to custom themes, up to 20. Built-ins are compiled in. An older `gains` array loads as ten peaking bands at the old ISO centers. The reported length is the longer of the decoder duration and the tag duration. If playback passes that length, the bar grows with the overrun instead of sitting at the end.
 
 Release builds use `panic = "unwind"` so `catch_unwind` around the decoder can turn a Symphonia panic into an error instead of killing the AppImage.
+
+The output device can disappear (PipeWire restart, a USB DAC unplugged, suspend). Rodio's `Sink::clear` and `try_seek` wait on the audio callback and never return on a dead stream, so the engine does not call `clear`: a new song or Stop drops the sink and makes a fresh one on the same stream. Every command from the player side has a 5 s timeout. The audio thread watches for a stall (playing, sources queued, position not moving for 3 s) and rebuilds the stream. Position is restored by seeking the *decoder* before it is appended; `Sink::try_seek` is never used on a rebuilt stream, because that path waits on the callback. With no device at all, the thread retries every 5 s and on the next Play; commands answer `no audio output device` in the meantime and the player does not step to the next song.
+
+Public `Player` operations take one outer mutex, so play/pause/seek/next cannot interleave. A poisoned lock is recovered rather than panicking the UI. The ticker and visualizer threads wrap each iteration in `catch_unwind`. Volume slider writes coalesce until the next tick (`Store::update_soon`).
+
+Position is counted in file time from decoded frames, so changing speed does not jump the seek bar. ReplayGain may multiply volume up to 3×; the sink clamp matches that so a quiet album is not silently clipped at 1.0.
+
+Gapless still *prepares* the next file about 1.6s before the current track ends. The hop itself is a source-started counter on the decoder, not a `queued <= 1 && position < 800` guess. Shuffle, repeat, enqueue, and seek drop a pending append if it is no longer the song that should play next. End of track skips files that will not open, then stops after one full pass; Repeat One on a missing file errors once rather than spinning.
+
+Search play (`play_media`) takes a generation token. A second play, or any library play, invalidates the first download: the child (yt-dlp/ffmpeg/curl) is killed, and `drop_temps_except` will not delete a file whose video id is still in flight. ffmpeg is checked before the download starts. Every child process has a wall-clock timeout.
+
+Heavy Tauri commands (scan, tags, covers, playlist play, search, remote stop) run on a blocking thread so GTK can keep painting.
+
+Files Symphonia rejects are transcoded into `~/.cache/audios/playback/` through a `.part` file that is renamed only when ffmpeg finishes, so a half-written copy is never a cache hit. The cache is capped at 512 MB; oldest files go first, at startup and after each transcode.
 
 ## Queue order
 
@@ -130,16 +149,16 @@ The visualizer, when Settings turns it on, reads a decimated copy of the samples
 
 ## Tag writes
 
-The original file is copied to a sibling temp that **keeps the audio extension** (`.song.audios-tmp.mp3`, not `.song.mp3.audios-tmp`). Lofty’s `read_from_path` decides the format from the extension. A `.audios-tmp` suffix makes it report that no format could be determined. A failed write deletes the temp and leaves the original untouched. Do not write tags in place. Not every container has the same frames. Artwork is sniffed from magic bytes and kept as JPEG or PNG (or converted to JPEG) so a packed WebKit `File.type` of `""` does not label a PNG as JPEG.
+Batch writes continue past a file that fails and return how many were written plus each failure. The original file is copied to a sibling temp that **keeps the audio extension** (`.song.audios-tmp.mp3`, not `.song.mp3.audios-tmp`). A staging file older than an hour is a leftover from a crash; the scanner and the next write in that folder remove it. Lofty’s `read_from_path` decides the format from the extension. A `.audios-tmp` suffix makes it report that no format could be determined. A failed write deletes the temp and leaves the original untouched. Do not write tags in place. Not every container has the same frames. Artwork is sniffed from magic bytes and kept as JPEG or PNG (or converted to JPEG) so a packed WebKit `File.type` of `""` does not label a PNG as JPEG. `read_tags` lists pictures without their bytes. Tags loads a downscaled JPEG per picture through `picture_preview`. Adding artwork sends a filesystem path; Rust reads the image. Cover art sent to the webview is capped at 512 px on the long edge.
 
-MP4-family files (`.m4a`, `.mp4`, and the same container under other names) sometimes store `mdat` with a 64-bit size. Lofty 0.22 then skips eight bytes past that atom and reports that `moov` is missing. When that size still fits in 32 bits, [`mp4_recover.rs`](../src-tauri/src/mp4_recover.rs) rewrites the header to a normal 8-byte atom in memory for reads, and on the staging file for saves. Audio samples are not rewritten. Chunk offsets move back by those eight bytes. The original is replaced only if the tag write succeeds.
+MP4-family files (`.m4a`, `.mp4`, and the same container under other names) sometimes store `mdat` with a 64-bit size. Lofty 0.22 then skips eight bytes past that atom and reports that `moov` is missing. When that size still fits in 32 bits, [`mp4_recover.rs`](../src-tauri/src/mp4_recover.rs) rewrites the header to a normal 8-byte atom in memory for reads, and on the staging file for saves. Files larger than 48 MB are skipped so a 600 MB audiobook does not double RSS. Audio samples are not rewritten. Chunk offsets move back by those eight bytes. The original is replaced only if the tag write succeeds.
 
 ## Search
 
 Two steps. The UI already has the title from step 1. Step 2 is not a second text search.
 
 1. **List** — `yt-dlp -J --flat-playlist`. A text search runs `ytsearchN:` first, then `scsearchN:` for SoundCloud. A pasted link is passed through, so Bandcamp and other yt-dlp sites work when the URL is known. This step is metadata only. Cover search in Tags stays on YouTube thumbnails and does not download audio. A SoundCloud hit keeps its `webpage_url`. Do not turn that id into a YouTube watch URL.
-2. **Play** — `cache_media(watch_url)` downloads a temp file, remuxes it, then `play_tracks` loads that path. Switching tracks deletes other files in the search cache. **Download** copies the remuxed file to a path the user picked.
+2. **Play** — `cache_media(watch_url)` downloads a temp file, remuxes it, then `play_tracks` loads that path. Switching tracks deletes other files in the search cache. **Download** copies the original cached file and keeps the extension the user picked.
 
 ### Workarounds
 
@@ -166,26 +185,35 @@ Search needs a current yt-dlp, ffmpeg, and curl. Spotify is not a source.
 - Stay on WebKit-safe CSS.
 - The footer status line is red for errors and muted for info (`Saved tags`, `Getting audio…`, Vite preview).
 - Player, Search, Tags, and Settings stay mounted and toggle with `hidden`, so tab state survives a switch.
+- Each tab, the full now-playing view, and everything under the title bar sit inside an `ErrorBoundary` (`src/ui/ErrorBoundary.tsx`). A render error shows a message with Try again and Reload; the window buttons keep working.
+- One-way actions (delete playlist, remove a picture, field, EQ preset, or theme, and Apply to N in Tags) go through `confirm()` from `src/ui/confirm.ts`, rendered by `ConfirmHost`. Cancel has focus; Escape cancels. Apply to N lists which fields will be set and which are blank and will be cleared.
 
 ## Security
 
 - `app.security.csp` is `null`. A tighter CSP breaks `data:` cover art and local asset loads unless those sources are listed.
 - Search shells out to yt-dlp, ffmpeg, and curl. Queries are length-limited. URLs are arguments, not a shell string.
 - Library walks use `follow_links(true)`. WalkDir skips symlink cycles. A symlink farm can still make a scan huge.
-- The remote binds all interfaces, but only after Start web remote. A request without the pairing code is a 404. Stopping it drops the song index and the cached cover. It does not expose YouTube search or file paths.
+- The remote binds private IPv4 addresses and localhost after Start web remote, not `0.0.0.0`. A request without the pairing code is a 404. Eight failed codes from one IP lock that IP out for ten minutes. Stopping it drops the song index and the cached cover. It does not expose YouTube search or file paths.
 
 ## Known issues
 
 - **YouTube extractor drift.** mediaconnect, format IDs, and public frontends will rot. Fix the extractor args or the host list. Do not add a stricter `-f bestaudio[ext=m4a]` selector.
 - **Library decode.** `.m4a` and other containers are still scanned as playable. If Symphonia cannot open one, playback uses the ffmpeg cache copy. The original file is not rewritten.
-- **Search cache** is one file per video id. A failed remux must not leave only an unplayable `.m4a` as the cache hit. `prepare_for_player` remuxes that path again.
+- **Search cache** is one file per video id. A failed remux must not leave only an unplayable `.m4a` as the cache hit. `prepare_for_player` remuxes that path again. Save copies the original download and keeps the extension the user picked.
 - Search unit tests are JSON and path checks. They do not hit live YouTube, and they do not require yt-dlp or ffmpeg.
 
 ## Checks
 
 ```bash
-npm test
+npm run check        # typecheck + eslint + prettier --check + vitest
 npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
+
+CI runs the same set on every push and pull request (`.github/workflows/ci.yml`). `npm run format` rewrites files to the Prettier style.
+
+Frontend tests run under Node by default. A file named `*.dom.test.tsx` gets jsdom and Testing Library, for component tests.
+
+`Player` can be driven without audio or a window. `player::fake_engine::FakeEngine` stands in for rodio and `RecordingHost` collects events; `Player::with_parts` assembles one with no background threads, and tests call `player.tick()` themselves to step end-of-track and gapless logic.

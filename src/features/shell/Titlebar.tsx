@@ -47,9 +47,7 @@ function WinBtn({
       aria-label={label}
       onClick={onClick}
       className={`flex h-full w-11 items-center justify-center text-app-subtle transition-colors ${
-        danger
-          ? "hover:bg-app-danger hover:text-white"
-          : "hover:bg-app-hover hover:text-app-text"
+        danger ? "hover:bg-app-danger hover:text-white" : "hover:bg-app-hover hover:text-app-text"
       }`}
     >
       {children}

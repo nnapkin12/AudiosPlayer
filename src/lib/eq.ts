@@ -146,14 +146,26 @@ export function isToneTemplate(bands: EqBand[]): boolean {
   const normalized = normalizeEqBands(bands);
   for (const slot of MACRO_SLOTS) {
     const band = normalized[slot.index];
-    if (!band || band.kind !== slot.kind || Math.abs(band.freq - slot.freq) > 0.05 || Math.abs(band.q - slot.q) > 0.001) {
+    if (
+      !band ||
+      band.kind !== slot.kind ||
+      Math.abs(band.freq - slot.freq) > 0.05 ||
+      Math.abs(band.q - slot.q) > 0.001
+    ) {
       return false;
     }
   }
-  return normalized.every((band, index) => MACRO_SLOTS.some((slot) => slot.index === index) || Math.abs(band.gain) < 0.01);
+  return normalized.every(
+    (band, index) => MACRO_SLOTS.some((slot) => slot.index === index) || Math.abs(band.gain) < 0.01,
+  );
 }
 
-export function setMacroGain(bands: EqBand[], index: number, gain: number, enforceLock: boolean): EqBand[] {
+export function setMacroGain(
+  bands: EqBand[],
+  index: number,
+  gain: number,
+  enforceLock: boolean,
+): EqBand[] {
   const next = normalizeEqBands(bands);
   const slot = MACRO_SLOTS.find((item) => item.index === index);
   const band = next[index];
@@ -260,7 +272,12 @@ function designMagnitudeDb(band: EqBand, sampleRate: number, freq: number): numb
   return 20 * Math.log10(num / den);
 }
 
-export function magnitudeDb(bands: EqBand[], preampDb: number, sampleRate: number, freq: number): number {
+export function magnitudeDb(
+  bands: EqBand[],
+  preampDb: number,
+  sampleRate: number,
+  freq: number,
+): number {
   return normalizeEqBands(bands).reduce(
     (sum, band) => sum + designMagnitudeDb(band, sampleRate, freq),
     preampDb,

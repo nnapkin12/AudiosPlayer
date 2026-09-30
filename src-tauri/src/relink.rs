@@ -47,7 +47,7 @@ pub fn list_missing(store: &Store) -> Vec<MissingItem> {
 pub fn retarget_playlists(playlists: &mut [Playlist], library_roots: &[String]) {
     if !playlists
         .iter()
-        .any(|playlist| playlist.items.iter().any(|item| item_missing(item)))
+        .any(|playlist| playlist.items.iter().any(item_missing))
     {
         return;
     }
@@ -140,6 +140,11 @@ fn relink_library(store: &Store, from: &str, dest: &Path) -> AppResult<()> {
 }
 
 fn relink_playlist(store: &Store, id: &str, from: &str, dest: &Path) -> AppResult<()> {
+    let files = if dest.is_dir() {
+        crate::player::scan::audio_paths(dest).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let mut found = false;
     let mut updated = false;
     store.update(|data| {
@@ -154,24 +159,17 @@ fn relink_playlist(store: &Store, id: &str, from: &str, dest: &Path) -> AppResul
                     updated = true;
                 }
             }
-            if let Ok(files) = crate::player::scan::audio_paths(dest) {
-                for item in &mut playlist.items {
-                    if item.kind == "exclude"
-                        || item.kind == "dir"
-                        || Path::new(&item.path).is_file()
-                    {
-                        continue;
-                    }
-                    let Some(name) = Path::new(&item.path).file_name() else {
-                        continue;
-                    };
-                    if let Some(match_path) =
-                        files.iter().find(|file| file.file_name() == Some(name))
-                    {
-                        item.path = match_path.to_string_lossy().to_string();
-                        item.kind = "file".into();
-                        updated = true;
-                    }
+            for item in &mut playlist.items {
+                if item.kind == "exclude" || item.kind == "dir" || Path::new(&item.path).is_file() {
+                    continue;
+                }
+                let Some(name) = Path::new(&item.path).file_name() else {
+                    continue;
+                };
+                if let Some(match_path) = files.iter().find(|file| file.file_name() == Some(name)) {
+                    item.path = match_path.to_string_lossy().to_string();
+                    item.kind = "file".into();
+                    updated = true;
                 }
             }
             return;
@@ -259,21 +257,11 @@ fn search_places(library_roots: &[String], playlists: &[Playlist]) -> Vec<PathBu
     let mut places = Vec::new();
     for root in library_roots {
         push_place(&mut places, PathBuf::from(root));
-        if let Some(parent) = Path::new(root).parent() {
-            push_place(&mut places, parent.to_path_buf());
-        }
     }
     for playlist in playlists {
         for item in &playlist.items {
-            let path = Path::new(&item.path);
-            if item.kind == "dir" && path.is_dir() {
-                push_place(&mut places, path.to_path_buf());
-            }
-            if let Some(parent) = path.parent() {
-                push_place(&mut places, parent.to_path_buf());
-                if let Some(grand) = parent.parent() {
-                    push_place(&mut places, grand.to_path_buf());
-                }
+            if item.kind == "dir" {
+                push_place(&mut places, PathBuf::from(&item.path));
             }
         }
     }
@@ -292,7 +280,7 @@ fn index_places(
     let mut files: HashMap<String, Vec<String>> = HashMap::new();
     let mut dirs: HashMap<String, Vec<String>> = HashMap::new();
     for place in places {
-        for entry in WalkDir::new(place).max_depth(5).follow_links(true) {
+        for entry in WalkDir::new(place).max_depth(5).follow_links(false) {
             let Ok(entry) = entry else {
                 continue;
             };
@@ -411,5 +399,35 @@ mod tests {
         )
         .is_ok());
         assert!(list_missing(&store).is_empty());
+    }
+
+    #[test]
+    fn a_library_root_does_not_search_its_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::for_test(dir.path());
+        let library = dir.path().join("library");
+        let sibling = dir.path().join("Videos").join("music");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let lost = library.join("gone.mp3");
+        std::fs::write(&lost, []).unwrap();
+        playlists::create(&store, "Late".into()).unwrap();
+        store.update(|data| {
+            data.library_roots.push(library.to_string_lossy().into());
+            data.playlists[0].items = vec![PlaylistItem {
+                path: lost.to_string_lossy().into(),
+                kind: "file".into(),
+            }];
+        });
+        std::fs::remove_file(&lost).unwrap();
+        std::fs::write(sibling.join("gone.mp3"), []).unwrap();
+        let _ = playlists::sync(&store);
+        let missing = list_missing(&store);
+        assert_eq!(
+            missing.len(),
+            1,
+            "must not steal a song from outside the library"
+        );
+        assert!(missing[0].path.contains("gone.mp3"));
     }
 }

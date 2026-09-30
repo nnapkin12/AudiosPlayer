@@ -1,8 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { NowPlayingBar } from "@/features/shell/NowPlayingBar";
 import { NowPlayingFull } from "@/features/shell/NowPlayingFull";
+import { ShortcutSheet } from "@/features/shell/ShortcutSheet";
 import { Sidebar } from "@/features/shell/Sidebar";
 import { Titlebar } from "@/features/shell/Titlebar";
+import { useWindowDrop } from "@/features/shell/useWindowDrop";
 import { WindowEdges } from "@/features/shell/WindowEdges";
 import { PlayerView } from "@/features/player/PlayerView";
 import { SearchView } from "@/features/search/SearchView";
@@ -15,11 +17,15 @@ import { applyAppearance } from "@/lib/theme";
 import { applyMotion } from "@/lib/motion";
 import type { PlayerSnapshot, Tick } from "@/lib/types";
 import { useAppStore } from "@/store/useAppStore";
+import { ConfirmHost } from "@/ui/ConfirmDialog";
+import { ErrorBoundary } from "@/ui/ErrorBoundary";
 
 export default function App() {
   const tab = useAppStore((state) => state.tab);
   const status = useAppStore((state) => state.status);
   const statusTone = useAppStore((state) => state.statusTone);
+  const error = useAppStore((state) => state.error);
+  const clearError = useAppStore((state) => state.clearError);
   const nowPlayingOpen = useAppStore((state) => state.nowPlayingOpen);
   const applySnapshot = useAppStore((state) => state.applySnapshot);
   const applyTick = useAppStore((state) => state.applyTick);
@@ -32,6 +38,8 @@ export default function App() {
   const setAppearance = useAppStore((state) => state.setAppearance);
   const setMinimizeMovement = useAppStore((state) => state.setMinimizeMovement);
   const setVisualizer = useAppStore((state) => state.setVisualizer);
+  const { hot: dropHot } = useWindowDrop();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -72,8 +80,19 @@ export default function App() {
           setStatus(errorMessage(error, "Could not load player"));
         }
       }
-      stop.push(await listen<PlayerSnapshot>("player://state", applySnapshot));
-      stop.push(await listen<Tick>("player://tick", applyTick));
+      const stateUnlisten = await listen<PlayerSnapshot>("player://state", applySnapshot);
+      if (disposed) {
+        stateUnlisten();
+        return;
+      }
+      stop.push(stateUnlisten);
+      const tickUnlisten = await listen<Tick>("player://tick", applyTick);
+      if (disposed) {
+        tickUnlisten();
+        return;
+      }
+      stop.push(tickUnlisten);
+      let refreshTimer = 0;
       const refreshFromDisk = async () => {
         try {
           const [playlists, roots, missing] = await Promise.all([
@@ -98,27 +117,40 @@ export default function App() {
           // The next open reads the disk again.
         }
       };
-      stop.push(await listen("library://changed", () => {
-        void refreshFromDisk();
-      }));
-      const onFocus = () => {
-        if (document.visibilityState === "hidden") return;
-        void refreshFromDisk();
+      const scheduleRefresh = () => {
+        window.clearTimeout(refreshTimer);
+        refreshTimer = window.setTimeout(() => {
+          void refreshFromDisk();
+        }, 400);
       };
-      window.addEventListener("focus", onFocus);
-      document.addEventListener("visibilitychange", onFocus);
+      const libraryUnlisten = await listen("library://changed", () => {
+        scheduleRefresh();
+      });
+      if (disposed) {
+        libraryUnlisten();
+        return;
+      }
+      stop.push(libraryUnlisten);
+      const onVisible = () => {
+        if (document.visibilityState === "hidden") return;
+        scheduleRefresh();
+      };
+      document.addEventListener("visibilitychange", onVisible);
       stop.push(() => {
-        window.removeEventListener("focus", onFocus);
-        document.removeEventListener("visibilitychange", onFocus);
+        window.clearTimeout(refreshTimer);
+        document.removeEventListener("visibilitychange", onVisible);
       });
     })();
 
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setNowPlayingOpen(false);
+        setShortcutsOpen(false);
       }
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+      if (shortcutBlocked(event)) return;
+      if (event.key === "?" || (event.shiftKey && event.key === "/")) {
+        event.preventDefault();
+        setShortcutsOpen((open) => !open);
         return;
       }
       const playingNow = Boolean(useAppStore.getState().snapshot?.current);
@@ -128,8 +160,10 @@ export default function App() {
         void api.toggle();
       }
       if (event.key === "f" && playingNow) setNowPlayingOpen(true);
-      if (event.key === "ArrowRight") void api.seek((useAppStore.getState().snapshot?.positionMs ?? 0) + 5000);
-      if (event.key === "ArrowLeft") void api.seek(Math.max(0, (useAppStore.getState().snapshot?.positionMs ?? 0) - 5000));
+      if (event.key === "ArrowRight")
+        void api.seek((useAppStore.getState().snapshot?.positionMs ?? 0) + 5000);
+      if (event.key === "ArrowLeft")
+        void api.seek(Math.max(0, (useAppStore.getState().snapshot?.positionMs ?? 0) - 5000));
       if (event.key === "n") void api.next();
       if (event.key === "p") void api.previous();
     };
@@ -140,40 +174,119 @@ export default function App() {
       stop.forEach((fn) => fn());
       window.removeEventListener("keydown", onKey);
     };
-  }, [applySnapshot, applyTick, bumpLibrary, setAppearance, setLibraryRoots, setMinimizeMovement, setNowPlayingOpen, setPlaylists, setStatus, setVisualizer]);
+  }, [
+    applySnapshot,
+    applyTick,
+    bumpLibrary,
+    setAppearance,
+    setLibraryRoots,
+    setMinimizeMovement,
+    setNowPlayingOpen,
+    setPlaylists,
+    setStatus,
+    setVisualizer,
+  ]);
 
   return (
     <div className="app-frame relative flex h-full flex-col overflow-hidden bg-app">
       <WindowEdges />
       <Titlebar />
-      <div className="relative flex min-h-0 flex-1">
-        <Sidebar />
-        <main className="flex min-w-0 flex-1 flex-col">
-          <div className={tab === "player" ? "tab-panel flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
-            <PlayerView />
-          </div>
-          <div className={tab === "search" ? "tab-panel flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
-            <SearchView />
-          </div>
-          <div className={tab === "tags" ? "tab-panel flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
-            <TagsView />
-          </div>
-          <div className={tab === "settings" ? "tab-panel flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
-            <SettingsView />
-          </div>
-          {status ? (
-            <p
-              className={`shrink-0 border-t border-app-line px-4 py-1.5 text-[13px] font-semibold ${
-                statusTone === "info" ? "text-app-muted" : "text-app-danger"
-              }`}
+      {/* Everything below the title bar is inside a boundary, so a crash
+          leaves minimize, maximize and close working. */}
+      <ErrorBoundary name="Audios!" fill>
+        <div className="relative flex min-h-0 flex-1">
+          <Sidebar />
+          <main className="flex min-w-0 flex-1 flex-col">
+            <div
+              className={
+                tab === "player" ? "tab-panel flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"
+              }
             >
-              {status}
-            </p>
+              <ErrorBoundary name="the library" fill>
+                <PlayerView />
+              </ErrorBoundary>
+            </div>
+            <div
+              className={
+                tab === "search" ? "tab-panel flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"
+              }
+            >
+              <ErrorBoundary name="Search" fill>
+                <SearchView />
+              </ErrorBoundary>
+            </div>
+            <div
+              className={
+                tab === "tags" ? "tab-panel flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"
+              }
+            >
+              <ErrorBoundary name="Tags" fill>
+                <TagsView />
+              </ErrorBoundary>
+            </div>
+            <div
+              className={
+                tab === "settings" ? "tab-panel flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"
+              }
+            >
+              <ErrorBoundary name="Settings" fill>
+                <SettingsView />
+              </ErrorBoundary>
+            </div>
+            {status || error ? (
+              <p
+                role="status"
+                aria-live="polite"
+                className={`flex shrink-0 items-center justify-between gap-3 border-t border-app-line px-4 py-1.5 text-[13px] font-semibold ${
+                  status && statusTone === "info" ? "text-app-muted" : "text-app-danger"
+                }`}
+              >
+                <span>{status ?? error}</span>
+                {status && statusTone === "info" ? null : (
+                  <button
+                    type="button"
+                    aria-label="Dismiss"
+                    className="text-app-muted hover:text-app-text"
+                    onClick={() => {
+                      if (status) setStatus(null);
+                      else clearError();
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+              </p>
+            ) : null}
+          </main>
+          {nowPlayingOpen && hasTrack ? (
+            <ErrorBoundary name="Now Playing">
+              <NowPlayingFull />
+            </ErrorBoundary>
           ) : null}
-        </main>
-        {nowPlayingOpen && hasTrack ? <NowPlayingFull /> : null}
-      </div>
-      {nowPlayingOpen || !hasTrack ? null : <NowPlayingBar />}
+        </div>
+      </ErrorBoundary>
+      {dropHot ? (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-black/35 text-[17px] font-semibold text-white">
+          Drop to {tab === "tags" ? "edit tags" : "play"}
+        </div>
+      ) : null}
+      <ConfirmHost />
+      {shortcutsOpen ? <ShortcutSheet onClose={() => setShortcutsOpen(false)} /> : null}
+      {nowPlayingOpen ? null : <NowPlayingBar />}
     </div>
   );
+}
+
+function shortcutBlocked(event: KeyboardEvent): boolean {
+  if (event.altKey || event.ctrlKey || event.metaKey) return true;
+  if (event.shiftKey && event.key !== "?") return true;
+  const target = event.target as HTMLElement | null;
+  if (!target) return false;
+  if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+    return true;
+  }
+  if (target.tagName === "BUTTON" || target.tagName === "SELECT" || target.tagName === "A") {
+    return true;
+  }
+  return Boolean(target.closest("[role=dialog], [role=alertdialog], [role=menu]"));
 }

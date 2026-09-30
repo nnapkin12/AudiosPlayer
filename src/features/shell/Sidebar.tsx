@@ -9,32 +9,16 @@ export function Sidebar() {
   return (
     <aside className="flex w-16 shrink-0 flex-col items-center border-r border-app-line bg-app-raised py-3">
       <div className="flex flex-col gap-1.5">
-        <NavButton
-          active={tab === "player"}
-          label="Audios!"
-          onClick={() => setTab("player")}
-        >
+        <NavButton active={tab === "player"} label="Audios!" onClick={() => setTab("player")}>
           <Music2 size={20} />
         </NavButton>
-        <NavButton
-          active={tab === "search"}
-          label="Search"
-          onClick={() => setTab("search")}
-        >
+        <NavButton active={tab === "search"} label="Search" onClick={() => setTab("search")}>
           <Search size={20} />
         </NavButton>
-        <NavButton
-          active={tab === "tags"}
-          label="Tags"
-          onClick={() => setTab("tags")}
-        >
+        <NavButton active={tab === "tags"} label="Tags" onClick={() => setTab("tags")}>
           <Tags size={20} />
         </NavButton>
-        <NavButton
-          active={tab === "settings"}
-          label="Settings"
-          onClick={() => setTab("settings")}
-        >
+        <NavButton active={tab === "settings"} label="Settings" onClick={() => setTab("settings")}>
           <Settings size={20} />
         </NavButton>
       </div>

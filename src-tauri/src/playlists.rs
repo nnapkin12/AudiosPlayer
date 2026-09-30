@@ -364,13 +364,16 @@ pub fn add_paths(store: &Store, id: String, paths: Vec<String>) -> AppResult<Vec
 /// folder is still on disk but the file or folder itself is gone. A missing
 /// parent means the drive may be offline, so those entries stay.
 pub fn sync(store: &Store) -> bool {
-    let mut playlists = store.snapshot().playlists;
-    crate::relink::retarget_playlists(&mut playlists, &store.snapshot().library_roots);
+    let snapshot = store.snapshot();
+    let mut playlists = snapshot.playlists;
+    // Compare against the items as loaded, so a relink that changes a path
+    // without dropping anything is still written back.
+    let before: Vec<Vec<PlaylistItem>> = playlists.iter().map(|p| p.items.clone()).collect();
+    crate::relink::retarget_playlists(&mut playlists, &snapshot.library_roots);
     let mut changed = Vec::new();
-    for playlist in &mut playlists {
-        let before = playlist.items.clone();
+    for (playlist, original) in playlists.iter_mut().zip(before.iter()) {
         playlist.items.retain(keep_item);
-        if playlist.items != before {
+        if &playlist.items != original {
             changed.push(playlist.id.clone());
         }
     }
@@ -780,7 +783,7 @@ mod tests {
     #[test]
     fn mosaic_uses_up_to_four_tiles() {
         let red = RgbImage::from_pixel(8, 8, Rgb([200, 20, 20]));
-        let mosaic = compose_mosaic(&[red.clone()]);
+        let mosaic = compose_mosaic(std::slice::from_ref(&red));
         assert_eq!(mosaic.dimensions(), (1024, 1024));
         let mosaic = compose_mosaic(&[
             red,

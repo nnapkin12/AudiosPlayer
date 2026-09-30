@@ -34,48 +34,116 @@ export function ContextMenu({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [openSub, setOpenSub] = useState<string | null>(null);
+  const [pos, setPos] = useState({ left: x, top: y });
+  const focusable = items.filter((item) => item.kind !== "sep");
+  const [active, setActive] = useState(0);
+
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const width = node.offsetWidth;
+    const height = node.offsetHeight;
+    setPos({
+      left: Math.min(x, Math.max(MARGIN, window.innerWidth - width - MARGIN)),
+      top: Math.min(y, Math.max(MARGIN, window.innerHeight - height - MARGIN)),
+    });
+  }, [x, y, items]);
 
   useEffect(() => {
     const onPointer = (event: MouseEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) onClose();
     };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
     window.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
-    };
+    return () => window.removeEventListener("mousedown", onPointer);
   }, [onClose]);
 
-  const left = Math.min(x, window.innerWidth - 220);
-  const top = Math.min(y, window.innerHeight - 16 - items.length * 32);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const targets = node.querySelectorAll<HTMLElement>("[data-menu-index]");
+    targets[active]?.focus();
+  }, [active, openSub]);
+
+  function move(delta: number) {
+    if (focusable.length === 0) return;
+    setActive((index) => (index + delta + focusable.length) % focusable.length);
+  }
 
   return (
     <div
       ref={ref}
+      role="menu"
+      tabIndex={0}
+      aria-label="Actions"
       className="fixed z-50 min-w-[180px] rounded-lg border border-app-border bg-app-raised py-1 shadow-[0_12px_32px_rgb(0_0_0_/_0.35)]"
-      style={{ left, top }}
+      style={{ left: pos.left, top: pos.top }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          if (openSub) setOpenSub(null);
+          else onClose();
+        }
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          move(1);
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          move(-1);
+        }
+        if (event.key === "Home") {
+          event.preventDefault();
+          setActive(0);
+        }
+        if (event.key === "End") {
+          event.preventDefault();
+          setActive(Math.max(0, focusable.length - 1));
+        }
+        if (event.key === "ArrowRight") {
+          const item = focusable[active];
+          if (item?.kind === "submenu") {
+            event.preventDefault();
+            setOpenSub(item.label);
+          }
+        }
+        if (event.key === "ArrowLeft" && openSub) {
+          event.preventDefault();
+          setOpenSub(null);
+        }
+      }}
     >
       {items.map((item, index) => {
         if (item.kind === "sep") {
           return <div key={`sep-${index}`} className="my-1 h-px bg-app-line" />;
         }
+        const focusIndex = focusable.indexOf(item);
         if (item.kind === "submenu") {
           return (
             <SubmenuRow
               key={item.label}
               item={item}
               open={openSub === item.label}
-              onOpen={() => setOpenSub(item.label)}
+              active={focusIndex === active}
+              index={focusIndex}
+              onOpen={() => {
+                setActive(focusIndex);
+                setOpenSub(item.label);
+              }}
               onClose={() => setOpenSub(null)}
               onCloseMenu={onClose}
             />
           );
         }
-        return <MenuButton key={item.action.label} action={item.action} onClose={onClose} />;
+        return (
+          <MenuButton
+            key={item.action.label}
+            action={item.action}
+            onClose={onClose}
+            index={focusIndex}
+            active={focusIndex === active}
+            onFocus={() => setActive(focusIndex)}
+          />
+        );
       })}
     </div>
   );
@@ -84,12 +152,16 @@ export function ContextMenu({
 function SubmenuRow({
   item,
   open,
+  active,
+  index,
   onOpen,
   onClose,
   onCloseMenu,
 }: {
   item: Extract<MenuEntry, { kind: "submenu" }>;
   open: boolean;
+  active: boolean;
+  index: number;
   onOpen: () => void;
   onClose: () => void;
   onCloseMenu: () => void;
@@ -109,7 +181,9 @@ function SubmenuRow({
       if (!row || !panel) return;
       const next = placeFlyout(row.getBoundingClientRect(), panel.getBoundingClientRect());
       setBox((prev) =>
-        prev && prev.left === next.left && prev.top === next.top && prev.side === next.side ? prev : next,
+        prev && prev.left === next.left && prev.top === next.top && prev.side === next.side
+          ? prev
+          : next,
       );
     };
     place();
@@ -121,7 +195,18 @@ function SubmenuRow({
     <div className="relative" onMouseEnter={onOpen} onMouseLeave={onClose}>
       <div
         ref={rowRef}
+        role="menuitem"
+        tabIndex={active ? 0 : -1}
+        data-menu-index={index}
+        aria-haspopup="menu"
+        aria-expanded={open}
         className="flex w-full items-center justify-between px-3 py-1.5 text-left text-[13px] font-semibold text-app-text hover:bg-app-hover"
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onOpen();
+          }
+        }}
       >
         <span>{item.label}</span>
         <span className="text-app-muted">›</span>
@@ -129,6 +214,7 @@ function SubmenuRow({
       {open ? (
         <div
           className="fixed z-10"
+          role="menu"
           style={{
             left: box?.left ?? 0,
             top: box?.top ?? 0,
@@ -154,8 +240,12 @@ function SubmenuRow({
               {item.actions.length === 0 ? (
                 <p className="px-3 py-1.5 text-[13px] text-app-muted">No playlists yet</p>
               ) : (
-                item.actions.map((action, index) => (
-                  <MenuButton key={`${action.label}:${index}`} action={action} onClose={onCloseMenu} />
+                item.actions.map((action, actionIndex) => (
+                  <MenuButton
+                    key={`${action.label}:${actionIndex}`}
+                    action={action}
+                    onClose={onCloseMenu}
+                  />
                 ))
               )}
             </div>
@@ -203,11 +293,27 @@ function visibleWidth(left: number, width: number): number {
   return Math.max(0, end - start);
 }
 
-function MenuButton({ action, onClose }: { action: MenuAction; onClose: () => void }) {
+function MenuButton({
+  action,
+  onClose,
+  index,
+  active,
+  onFocus,
+}: {
+  action: MenuAction;
+  onClose: () => void;
+  index?: number;
+  active?: boolean;
+  onFocus?: () => void;
+}) {
   return (
     <button
       type="button"
+      role="menuitem"
+      tabIndex={active ? 0 : -1}
+      data-menu-index={index}
       disabled={action.disabled}
+      onFocus={onFocus}
       onClick={() => {
         if (action.disabled) return;
         action.onClick();

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -31,14 +32,21 @@ pub struct PersistData {
     pub last_root: Option<String>,
     #[serde(default)]
     pub library_roots: Vec<String>,
+    #[serde(default = "default_volume")]
     pub volume: f64,
+    #[serde(default)]
     pub muted: bool,
+    #[serde(default)]
     pub repeat: RepeatMode,
+    #[serde(default)]
     pub shuffle: bool,
+    #[serde(default = "default_true")]
     pub replaygain: bool,
+    #[serde(default = "default_true")]
     pub gapless: bool,
     #[serde(default = "default_speed")]
     pub speed: f64,
+    #[serde(default)]
     pub positions: HashMap<String, u64>,
     #[serde(default)]
     pub playlists: Vec<Playlist>,
@@ -103,6 +111,14 @@ fn default_speed() -> f64 {
     1.0
 }
 
+fn default_volume() -> f64 {
+    0.85
+}
+
+fn default_true() -> bool {
+    true
+}
+
 pub fn default_viz_main() -> String {
     "#8ec8ff".into()
 }
@@ -131,12 +147,12 @@ impl Default for PersistData {
         Self {
             last_root: None,
             library_roots: Vec::new(),
-            volume: 0.85,
+            volume: default_volume(),
             muted: false,
             repeat: RepeatMode::Off,
             shuffle: false,
-            replaygain: true,
-            gapless: true,
+            replaygain: default_true(),
+            gapless: default_true(),
             speed: default_speed(),
             positions: HashMap::new(),
             playlists: Vec::new(),
@@ -157,6 +173,15 @@ impl Default for PersistData {
 pub struct Store {
     path: PathBuf,
     data: Arc<Mutex<PersistData>>,
+    /// Something the user should know about their saved state: the file
+    /// could not be read, or the last write failed.
+    warning: Arc<Mutex<Option<String>>>,
+    /// In-memory changes not yet on disk. See [`Store::update_soon`].
+    dirty: Arc<AtomicBool>,
+    /// Bumped on every in-memory change so the folder watcher can skip `stat`.
+    revision: Arc<AtomicU64>,
+    /// Session-only status (inotify limit, and similar). Not written to disk.
+    session_note: Arc<Mutex<Option<String>>>,
 }
 
 impl Store {
@@ -165,15 +190,45 @@ impl Store {
         Self {
             path: dir.join("state.json"),
             data: Arc::new(Mutex::new(PersistData::default())),
+            warning: Arc::new(Mutex::new(None)),
+            dirty: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+            session_note: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn load() -> Self {
-        let path = config_path();
-        let mut data: PersistData = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default();
+        Self::load_from(config_path())
+    }
+
+    /// Read `path`. A missing file is a fresh install. A file that exists but
+    /// does not parse is moved aside as `state.json.corrupt-<unix time>` so
+    /// nothing is overwritten, and the warning is kept for the UI.
+    pub fn load_from(path: PathBuf) -> Self {
+        let mut warning = None;
+        let mut data = match std::fs::read_to_string(&path) {
+            Err(_) => PersistData::default(),
+            Ok(raw) => match serde_json::from_str::<PersistData>(&raw) {
+                Ok(data) => data,
+                Err(error) => {
+                    let quarantine = quarantine_path(&path);
+                    let moved = std::fs::rename(&path, &quarantine).is_ok();
+                    warning = Some(if moved {
+                        format!(
+                            "Saved settings could not be read ({error}). The file was kept as {} and defaults are in use.",
+                            quarantine.display()
+                        )
+                    } else {
+                        format!(
+                            "Saved settings could not be read ({error}). Defaults are in use and will not be saved over {}.",
+                            path.display()
+                        )
+                    });
+                    eprintln!("Audios! state: {}", warning.as_deref().unwrap_or(""));
+                    PersistData::default()
+                }
+            },
+        };
         if data.library_roots.is_empty() {
             if let Some(root) = data.last_root.clone() {
                 if !root.trim().is_empty() {
@@ -181,14 +236,52 @@ impl Store {
                 }
             }
         }
+        // If the broken file could not be moved, refuse to write over it.
+        let path = if warning.is_some() && path.exists() {
+            path.with_extension("json.unsaved")
+        } else {
+            path
+        };
         Self {
             path,
             data: Arc::new(Mutex::new(data)),
+            warning: Arc::new(Mutex::new(warning)),
+            dirty: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+            session_note: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn snapshot(&self) -> PersistData {
         self.data.lock().expect("persist lock").clone()
+    }
+
+    /// A load or save problem worth showing. Cleared once a save succeeds
+    /// after a save failure; a load warning stays for the session.
+    pub fn warning(&self) -> Option<String> {
+        self.warning.lock().expect("persist warning").clone()
+    }
+
+    pub fn session_note(&self) -> Option<String> {
+        self.session_note
+            .lock()
+            .expect("persist session note")
+            .clone()
+    }
+
+    /// Shown in the status line for this session. Does not overwrite a
+    /// corrupt-file warning, and is not written to `state.json`.
+    pub fn set_session_note(&self, note: Option<String>) {
+        let mut slot = self.session_note.lock().expect("persist session note");
+        *slot = note;
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
+    }
+
+    fn bump_revision(&self) {
+        self.revision.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn config_dir(&self) -> PathBuf {
@@ -204,23 +297,57 @@ impl Store {
     {
         let mut data = self.data.lock().expect("persist lock");
         mutate(&mut data);
-        let _ = save_to(&self.path, &data);
+        self.bump_revision();
+        self.dirty.store(false, Ordering::Relaxed);
+        self.save_locked(&data);
     }
 
-    #[cfg(test)]
-    pub fn position_for(&self, path: &str) -> Option<u64> {
-        self.data
-            .lock()
-            .expect("persist lock")
-            .positions
-            .get(path)
-            .copied()
+    /// Change the in-memory state now and write it on the next
+    /// [`Store::flush_if_dirty`]. For values that change many times a second.
+    pub fn update_soon<F>(&self, mutate: F)
+    where
+        F: FnOnce(&mut PersistData),
+    {
+        let mut data = self.data.lock().expect("persist lock");
+        mutate(&mut data);
+        self.bump_revision();
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
-    pub fn forget_position(&self, path: &str) {
-        self.update(|data| {
-            data.positions.remove(path);
-        });
+    /// Write pending `update_soon` changes. Cheap when there are none.
+    pub fn flush_if_dirty(&self) {
+        if !self.dirty.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let data = self.data.lock().expect("persist lock");
+        self.save_locked(&data);
+    }
+
+    fn save_locked(&self, data: &PersistData) {
+        match save_to(&self.path, data) {
+            Ok(()) => {
+                let mut warning = self.warning.lock().expect("persist warning");
+                if warning
+                    .as_deref()
+                    .is_some_and(|w| w.starts_with(SAVE_FAILED))
+                {
+                    *warning = None;
+                }
+            }
+            Err(error) => {
+                let message = format!("{SAVE_FAILED} ({error}). Changes are not being saved.");
+                eprintln!("Audios! state: {message}");
+                let mut warning = self.warning.lock().expect("persist warning");
+                // Do not replace a load warning; that one explains more.
+                if warning.is_none()
+                    || warning
+                        .as_deref()
+                        .is_some_and(|w| w.starts_with(SAVE_FAILED))
+                {
+                    *warning = Some(message);
+                }
+            }
+        }
     }
 }
 
@@ -233,6 +360,20 @@ pub fn rename_atomic(from: &Path, to: &Path) -> AppResult<()> {
             Ok(())
         }
     }
+}
+
+const SAVE_FAILED: &str = "Could not save settings";
+
+fn quarantine_path(path: &Path) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "state.json".into());
+    path.with_file_name(format!("{name}.corrupt-{stamp}"))
 }
 
 fn config_path() -> PathBuf {
@@ -312,17 +453,88 @@ mod tests {
     }
 
     #[test]
-    fn forgets_saved_position() {
+    fn corrupt_state_is_quarantined_not_overwritten() {
         let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, "{\"volume\": 0.5, \"playlists\": [{\"id\"").unwrap();
+        let store = Store::load_from(path.clone());
+        assert!(store.warning().unwrap().contains("could not be read"));
+        assert!(!path.exists(), "the broken file must be moved aside");
+        let kept: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("state.json.corrupt-"))
+            .collect();
+        assert_eq!(kept.len(), 1);
+        // A later save writes a fresh file and leaves the quarantine alone.
+        store.update(|data| data.volume = 0.3);
+        assert!(path.exists());
+        assert_eq!(kept.len(), 1);
+        assert!(
+            store.warning().is_some(),
+            "load warning stays for the session"
+        );
+    }
+
+    #[test]
+    fn missing_state_is_a_fresh_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::load_from(dir.path().join("state.json"));
+        assert!(store.warning().is_none());
+        assert_eq!(store.snapshot().volume, default_volume());
+    }
+
+    #[test]
+    fn partial_v1_state_fills_defaults() {
+        // Only one v1 field present: nothing else may be required.
+        let data: PersistData = serde_json::from_str(r#"{"volume":0.2}"#).unwrap();
+        assert_eq!(data.volume, 0.2);
+        assert!(data.gapless);
+        assert!(data.replaygain);
+        assert!(!data.muted);
+        assert!(data.positions.is_empty());
+    }
+
+    #[test]
+    fn save_failure_is_reported_and_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the file should be makes the rename fail.
+        let path = dir.path().join("state.json");
+        std::fs::create_dir_all(&path).unwrap();
         let store = Store {
-            path: dir.path().join("state.json"),
+            path: path.clone(),
             data: Arc::new(Mutex::new(PersistData::default())),
+            warning: Arc::new(Mutex::new(None)),
+            dirty: Arc::new(AtomicBool::new(false)),
+            revision: Arc::new(AtomicU64::new(0)),
+            session_note: Arc::new(Mutex::new(None)),
         };
-        store.update(|data| {
-            data.positions.insert("/song.flac".into(), 20_000);
-        });
-        assert_eq!(store.position_for("/song.flac"), Some(20_000));
-        store.forget_position("/song.flac");
-        assert!(store.position_for("/song.flac").is_none());
+        store.update(|data| data.volume = 0.1);
+        assert!(store.warning().unwrap().starts_with(SAVE_FAILED));
+        std::fs::remove_dir_all(&path).unwrap();
+        store.update(|data| data.volume = 0.2);
+        assert!(store.warning().is_none());
+    }
+
+    #[test]
+    fn update_soon_waits_for_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::for_test(dir.path());
+        let path = dir.path().join("state.json");
+        store.update_soon(|data| data.volume = 0.42);
+        store.update_soon(|data| data.volume = 0.43);
+        assert!(!path.exists(), "nothing written yet");
+        assert_eq!(store.snapshot().volume, 0.43, "memory is current");
+        store.flush_if_dirty();
+        let saved: PersistData =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved.volume, 0.43);
+        // A plain update writes through and clears the flag.
+        std::fs::remove_file(&path).unwrap();
+        store.flush_if_dirty();
+        assert!(!path.exists());
+        store.update(|data| data.muted = true);
+        assert!(path.exists());
     }
 }

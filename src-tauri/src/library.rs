@@ -84,7 +84,7 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         add(&store, folder.to_string_lossy().to_string()).unwrap();
         std::fs::remove_dir(&folder).unwrap();
-        assert!(prune_missing(&store) == false || list(&store).len() == 1);
+        assert!(!prune_missing(&store) || list(&store).len() == 1);
         assert_eq!(list(&store).len(), 1);
         store.update(|data| {
             data.library_roots.push("/volume-offline/Music".into());

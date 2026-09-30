@@ -1,12 +1,19 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
-import { ArrowLeft, Compass, ListMusic, Music, Plus } from "lucide-react";
-import { goBack, invalidateBrowse, locateMissing, openBrowsePage, samePage } from "@/features/player/browse";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { ArrowLeft, Compass, ListMusic, MoreHorizontal, Music, Plus } from "lucide-react";
+import {
+  goBack,
+  invalidateBrowse,
+  locateMissing,
+  openBrowsePage,
+  samePage,
+} from "@/features/player/browse";
 import { api, pickAudioFiles, pickFolder, pickImageFile, revealInFiles } from "@/lib/api";
 import { CoverPicture, PlaylistCover, dropPlaylistCover, useNearView } from "@/lib/covers";
 import { baseName, errorMessage } from "@/lib/format";
 import type { Playlist } from "@/lib/types";
 import type { MenuEntry } from "@/features/shell/ContextMenu";
 import { useAppStore } from "@/store/useAppStore";
+import { confirm } from "@/ui/confirm";
 
 export function BrowseBack() {
   const canGoBack = useAppStore((state) => state.canGoBack);
@@ -15,6 +22,7 @@ export function BrowseBack() {
     <button
       type="button"
       title="Back"
+      aria-label="Back"
       onClick={() => void goBack()}
       className="mb-3 flex h-9 w-9 items-center justify-center rounded-full text-app-text hover:bg-app-hover"
     >
@@ -27,7 +35,8 @@ export function LibraryNav() {
   const browse = useAppStore((state) => state.browse);
   const libraryActive = browse.kind === "library" || browse.kind === "folder";
   const playlistActive = browse.kind === "playlists" || browse.kind === "playlist";
-  const discoverActive = browse.kind === "discover" || browse.kind === "artist" || browse.kind === "album";
+  const discoverActive =
+    browse.kind === "discover" || browse.kind === "artist" || browse.kind === "album";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-1">
@@ -73,13 +82,15 @@ function NavEntry({
   return (
     <button
       type="button"
+      title={label}
+      aria-label={label}
       onClick={onClick}
       className={`flex items-center gap-2 rounded-lg px-2 py-2 text-left ${
         active ? "bg-app-hover" : "hover:bg-app-hover"
       }`}
     >
       <span className="flex h-8 w-8 shrink-0 items-center justify-center">{icon}</span>
-      <span className="truncate text-[15px] font-semibold">{label}</span>
+      <span className="nav-label truncate text-[15px] font-semibold">{label}</span>
     </button>
   );
 }
@@ -141,20 +152,36 @@ export function LibraryPage({
         <div className="cover-grid mt-6">
           {libraryRoots.map((path) => {
             const gone = missing.some((item) => item.scope === "library" && item.path === path);
+            const items = folderMenu(path, removeRoot, setStatus);
             return (
-              <button
-                key={path}
-                type="button"
-                onClick={() => void openBrowsePage({ kind: "folder", path })}
-                onContextMenu={(event) => onMenu(event, folderMenu(path, removeRoot, setStatus))}
-                className="rounded-2xl p-3 text-center hover:bg-app-hover"
-              >
-                <FolderArt path={path} />
-                <span className={`mt-3 block truncate text-[16px] font-semibold ${gone ? "text-app-danger" : "text-app-text"}`}>
-                  {baseName(path)}
-                  {gone ? " missing" : ""}
-                </span>
-              </button>
+              <div key={path} className="relative">
+                <button
+                  type="button"
+                  onClick={() => void openBrowsePage({ kind: "folder", path })}
+                  onContextMenu={(event) => onMenu(event, items)}
+                  className="w-full rounded-2xl p-3 text-center hover:bg-app-hover"
+                >
+                  <FolderArt path={path} />
+                  <span
+                    className={`mt-3 block truncate text-[16px] font-semibold ${gone ? "text-app-danger" : "text-app-text"}`}
+                  >
+                    {baseName(path)}
+                    {gone ? " missing" : ""}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  title="Folder menu"
+                  aria-label="Folder menu"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onMenu(event, items);
+                  }}
+                  className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-md bg-black/35 text-white hover:bg-black/50"
+                >
+                  <MoreHorizontal size={16} />
+                </button>
+              </div>
             );
           })}
         </div>
@@ -165,22 +192,24 @@ export function LibraryPage({
 
 function FolderArt({ path }: { path: string }) {
   const near = useNearView();
-  const libraryEpoch = useAppStore((state) => state.libraryEpoch);
   const [paths, setPaths] = useState<string[] | null>(null);
 
   useEffect(() => {
     if (!near.ready) return;
     let cancelled = false;
     setPaths(null);
-    void api.scanTracks(path, true).then((tracks) => {
-      if (!cancelled) setPaths(tracks.slice(0, 4).map((track) => track.path));
-    }).catch(() => {
-      if (!cancelled) setPaths([]);
-    });
+    void api
+      .scanTracks(path, true)
+      .then((tracks) => {
+        if (!cancelled) setPaths(tracks.slice(0, 4).map((track) => track.path));
+      })
+      .catch(() => {
+        if (!cancelled) setPaths([]);
+      });
     return () => {
       cancelled = true;
     };
-  }, [path, libraryEpoch, near.ready]);
+  }, [path, near.ready]);
 
   if (!near.ready || !paths || paths.length === 0) {
     return (
@@ -195,9 +224,15 @@ function FolderArt({ path }: { path: string }) {
   }
   return (
     <div className="grid aspect-square w-full grid-cols-2 grid-rows-2 overflow-hidden rounded-xl">
-      {Array.from({ length: 4 }, (_, index) => paths[index] ?? paths[index % paths.length]).map((file, index) => (
-        <CoverPicture key={`${file}:${index}`} path={file} className="h-full w-full rounded-none" />
-      ))}
+      {Array.from({ length: 4 }, (_, index) => paths[index] ?? paths[index % paths.length]).map(
+        (file, index) => (
+          <CoverPicture
+            key={`${file}:${index}`}
+            path={file}
+            className="h-full w-full rounded-none"
+          />
+        ),
+      )}
     </div>
   );
 }
@@ -286,6 +321,7 @@ function PlaylistCard({
   const setStatus = useAppStore((state) => state.setStatus);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(playlist.name);
+  const renameLock = useRef(false);
 
   async function playFrom() {
     try {
@@ -296,31 +332,43 @@ function PlaylistCard({
   }
 
   async function addFiles() {
-    const paths = await pickAudioFiles();
-    if (paths.length === 0) return;
-    setPlaylists(await api.addToPlaylist(playlist.id, paths));
-    refreshPlaylist(playlist.id);
+    try {
+      const paths = await pickAudioFiles();
+      if (paths.length === 0) return;
+      setPlaylists(await api.addToPlaylist(playlist.id, paths));
+      refreshPlaylist(playlist.id);
+    } catch (error) {
+      setStatus(errorMessage(error, "Could not add songs"));
+    }
   }
 
   async function addFolder() {
-    const folder = await pickFolder("Add album");
-    if (!folder) return;
-    setPlaylists(await api.addToPlaylist(playlist.id, [folder]));
-    refreshPlaylist(playlist.id);
+    try {
+      const folder = await pickFolder("Add album");
+      if (!folder) return;
+      setPlaylists(await api.addToPlaylist(playlist.id, [folder]));
+      refreshPlaylist(playlist.id);
+    } catch (error) {
+      setStatus(errorMessage(error, "Could not add album"));
+    }
   }
 
   async function commitRename() {
     const next = draft.trim();
+    if (renameLock.current) return;
     if (!next || next === playlist.name) {
       setDraft(playlist.name);
       setRenaming(false);
       return;
     }
+    renameLock.current = true;
     try {
       setPlaylists(await api.renamePlaylist(playlist.id, next));
       setRenaming(false);
     } catch (error) {
       setStatus(errorMessage(error, "Could not rename playlist"));
+    } finally {
+      renameLock.current = false;
     }
   }
 
@@ -345,16 +393,73 @@ function PlaylistCard({
   }
 
   async function remove() {
-    dropPlaylistCover(playlist.id);
-    setPlaylists(await api.deletePlaylist(playlist.id));
-    const browse = useAppStore.getState().browse;
-    if (browse.kind === "playlist" && browse.id === playlist.id) {
-      await openBrowsePage({ kind: "playlists" });
+    const count = playlist.items.length;
+    const ok = await confirm({
+      title: `Delete “${playlist.name.trim() || "Untitled"}”?`,
+      body: [
+        count > 0
+          ? `The playlist and its ${count} item${count === 1 ? "" : "s"} are removed from Audios!.`
+          : "The playlist is removed from Audios!.",
+        "Your music files are not touched.",
+      ],
+      confirmLabel: "Delete playlist",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      dropPlaylistCover(playlist.id);
+      setPlaylists(await api.deletePlaylist(playlist.id));
+      const browse = useAppStore.getState().browse;
+      if (browse.kind === "playlist" && browse.id === playlist.id) {
+        await openBrowsePage({ kind: "playlists" });
+      }
+    } catch (error) {
+      setStatus(errorMessage(error, "Could not delete playlist"));
     }
   }
 
+  const cardMenu: MenuEntry[] = [
+    {
+      kind: "action",
+      action: {
+        label: "Open",
+        onClick: () => void openBrowsePage({ kind: "playlist", id: playlist.id }),
+      },
+    },
+    { kind: "action", action: { label: "Play", onClick: () => void playFrom() } },
+    {
+      kind: "action",
+      action: {
+        label: "Rename",
+        onClick: () => {
+          setDraft(playlist.name);
+          setRenaming(true);
+        },
+      },
+    },
+    {
+      kind: "action",
+      action: { label: "Change picture", onClick: () => void changeCover() },
+    },
+    ...(playlist.hasCover
+      ? ([
+          {
+            kind: "action",
+            action: { label: "Remove picture", onClick: () => void removeCover() },
+          },
+        ] satisfies MenuEntry[])
+      : []),
+    { kind: "action", action: { label: "Add songs", onClick: () => void addFiles() } },
+    { kind: "action", action: { label: "Add album", onClick: () => void addFolder() } },
+    { kind: "sep" },
+    {
+      kind: "action",
+      action: { label: "Delete playlist", danger: true, onClick: () => void remove() },
+    },
+  ];
+
   return (
-    <div className="rounded-2xl p-3 text-center hover:bg-app-hover">
+    <div className="relative rounded-2xl p-3 text-center hover:bg-app-hover">
       {renaming ? (
         <form
           onSubmit={(event) => {
@@ -362,7 +467,11 @@ function PlaylistCard({
             void commitRename();
           }}
         >
-          <PlaylistCover id={playlist.id} iconSize={56} className="aspect-square h-auto w-full rounded-xl" />
+          <PlaylistCover
+            id={playlist.id}
+            iconSize={56}
+            className="aspect-square h-auto w-full rounded-xl"
+          />
           <input
             autoFocus
             value={draft}
@@ -375,37 +484,34 @@ function PlaylistCard({
         <button
           type="button"
           onClick={() => void openBrowsePage({ kind: "playlist", id: playlist.id })}
-          onContextMenu={(event) =>
-            onMenu(event, [
-              { kind: "action", action: { label: "Open", onClick: () => void openBrowsePage({ kind: "playlist", id: playlist.id }) } },
-              { kind: "action", action: { label: "Play", onClick: () => void playFrom() } },
-              {
-                kind: "action",
-                action: {
-                  label: "Rename",
-                  onClick: () => {
-                    setDraft(playlist.name);
-                    setRenaming(true);
-                  },
-                },
-              },
-              { kind: "action", action: { label: "Change picture", onClick: () => void changeCover() } },
-              ...(playlist.hasCover
-                ? ([{ kind: "action", action: { label: "Remove picture", onClick: () => void removeCover() } }] satisfies MenuEntry[])
-                : []),
-              { kind: "action", action: { label: "Add songs", onClick: () => void addFiles() } },
-              { kind: "action", action: { label: "Add album", onClick: () => void addFolder() } },
-              { kind: "sep" },
-              { kind: "action", action: { label: "Delete playlist", danger: true, onClick: () => void remove() } },
-            ])
-          }
+          onContextMenu={(event) => onMenu(event, cardMenu)}
           className="w-full text-center"
         >
-          <PlaylistCover id={playlist.id} iconSize={56} className="aspect-square h-auto w-full rounded-xl" />
-          <span className="mt-3 block truncate text-[16px] font-semibold text-app-text">{playlist.name}</span>
+          <PlaylistCover
+            id={playlist.id}
+            iconSize={56}
+            className="aspect-square h-auto w-full rounded-xl"
+          />
+          <span className="mt-3 block truncate text-[16px] font-semibold text-app-text">
+            {playlist.name}
+          </span>
           <span className="block truncate text-[14px] font-medium text-app-muted">
             {playlist.items.length} item{playlist.items.length === 1 ? "" : "s"}
           </span>
+        </button>
+      )}
+      {renaming ? null : (
+        <button
+          type="button"
+          title="Playlist menu"
+          aria-label="Playlist menu"
+          onClick={(event) => {
+            event.stopPropagation();
+            onMenu(event, cardMenu);
+          }}
+          className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-md bg-black/35 text-white hover:bg-black/50"
+        >
+          <MoreHorizontal size={16} />
         </button>
       )}
     </div>
@@ -430,7 +536,9 @@ function folderMenu(
   setStatus: (status: string | null) => void,
 ): MenuEntry[] {
   const playlists = useAppStore.getState().playlists;
-  const gone = useAppStore.getState().missing.some((item) => item.scope === "library" && item.path === path);
+  const gone = useAppStore
+    .getState()
+    .missing.some((item) => item.scope === "library" && item.path === path);
   return [
     ...(gone
       ? ([
@@ -465,11 +573,14 @@ function folderMenu(
       action: {
         label: "Play",
         onClick: () => {
-          void api.playQueuePaths([path]).then((snapshot) => {
-            useAppStore.getState().applySnapshot(snapshot);
-          }).catch((error) => {
-            setStatus(errorMessage(error, "Couldn't play this"));
-          });
+          void api
+            .playQueuePaths([path])
+            .then((snapshot) => {
+              useAppStore.getState().applySnapshot(snapshot);
+            })
+            .catch((error) => {
+              setStatus(errorMessage(error, "Couldn't play this"));
+            });
         },
       },
     },

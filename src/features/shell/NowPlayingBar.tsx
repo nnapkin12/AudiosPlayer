@@ -12,8 +12,8 @@ import {
 import { PlayPauseIcon } from "@/features/shell/PlayPauseIcon";
 import { TransportSeek } from "@/features/shell/SeekBar";
 import { SpeedControl } from "@/features/shell/SpeedControl";
+import { nextRepeat, useTransport } from "@/features/shell/useTransport";
 import { Visualizer } from "@/features/shell/Visualizer";
-import { api } from "@/lib/api";
 import { CoverThumb } from "@/lib/covers";
 import { displayArtist, displayTitle } from "@/lib/format";
 import type { RepeatMode } from "@/lib/types";
@@ -29,67 +29,70 @@ export function NowPlayingBar() {
   const repeat = snapshot?.repeat ?? "off";
   const shuffle = snapshot?.shuffle ?? false;
   const visualizer = useAppStore((state) => state.visualizer);
+  const transport = useTransport();
 
   return (
-    <footer className="now-playing-bar relative z-10 h-[92px] shrink-0 items-center gap-4 border-t border-app-bar-line bg-app-bar px-4 shadow-[inset_0_1px_0_rgb(255_255_255_/_0.06)]">
+    <footer className="now-playing-bar relative z-10 shrink-0 items-center gap-4 border-t border-app-bar-line bg-app-bar px-4 shadow-[inset_0_1px_0_rgb(255_255_255_/_0.06)]">
       <div className="flex min-w-0 items-center gap-3">
-      <button
-        type="button"
-        onClick={() => setNowPlayingOpen(true)}
-        className="flex min-w-0 max-w-[16rem] items-center gap-3 text-left"
-      >
-        <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md bg-app-hover">
-          {current ? (
-            <CoverThumb path={current.path} className="h-12 w-12 rounded-md" />
-          ) : (
-            <div className="h-full w-full bg-gradient-to-br from-app-hover to-app" />
-          )}
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-[15px] font-semibold text-app-text">
-            {current ? displayTitle(current.title, current.path) : "Nothing playing"}
-          </p>
-          <p className="truncate text-[13px] font-medium text-app-muted">
-            {current ? displayArtist(current.artist, current.albumArtist) : "Nothing in Audios! yet"}
-          </p>
-        </div>
-      </button>
-      {visualizer ? <Visualizer variant="bar" /> : null}
+        <button
+          type="button"
+          onClick={() => current && setNowPlayingOpen(true)}
+          disabled={!current}
+          className="flex min-w-0 max-w-[16rem] items-center gap-3 text-left disabled:opacity-70"
+        >
+          <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md bg-app-hover">
+            {current ? (
+              <CoverThumb path={current.path} className="h-12 w-12 rounded-md" />
+            ) : (
+              <div className="h-full w-full bg-gradient-to-br from-app-hover to-app" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-[15px] font-semibold text-app-text">
+              {current ? displayTitle(current.title, current.path) : "Nothing playing"}
+            </p>
+            <p className="truncate text-[13px] font-medium text-app-muted">
+              {current
+                ? displayArtist(current.artist, current.albumArtist)
+                : "Nothing in Audios! yet"}
+            </p>
+          </div>
+        </button>
+        {visualizer ? <Visualizer variant="bar" /> : null}
       </div>
 
       <div className="flex min-w-0 flex-col items-center gap-1.5">
         <div className="relative flex items-center justify-center">
-          <div className="absolute right-full mr-2">
+          <div className="bar-speed absolute right-full mr-2">
             <SpeedControl />
           </div>
-          <BarTransport shuffle={shuffle} repeat={repeat} playing={playing} />
+          <BarTransport
+            shuffle={shuffle}
+            repeat={repeat}
+            playing={playing}
+            enabled={Boolean(current)}
+            transport={transport}
+          />
         </div>
-        <TransportSeek
-          tone="bar"
-          onSeek={(ms) => {
-            void api.seek(ms).catch(() => undefined);
-          }}
-        />
+        <TransportSeek tone="bar" onSeek={transport.seek} />
       </div>
 
       <div className="flex min-w-0 items-center justify-end gap-1">
-        <IconButton
-          label={muted ? "Unmute" : "Mute"}
-          onClick={() => void api.setMuted(!muted).catch(() => undefined)}
-        >
+        <IconButton label={muted ? "Unmute" : "Mute"} onClick={() => transport.setMuted(!muted)}>
           {muted || volume === 0 ? <VolumeX size={15} /> : <Volume2 size={15} />}
         </IconButton>
         <input
           type="range"
           min={0}
           max={100}
+          aria-label="Volume"
           value={muted ? 0 : Math.round(volume * 100)}
           onChange={(event) => {
-            void api.setVolume(Number(event.target.value) / 100).catch(() => undefined);
+            transport.setVolume(Number(event.target.value) / 100);
           }}
           className="bar-range bar-volume w-24"
         />
-        <IconButton label="Fullscreen" onClick={() => setNowPlayingOpen(true)}>
+        <IconButton label="Fullscreen" disabled={!current} onClick={() => setNowPlayingOpen(true)}>
           <Maximize2 size={16} />
         </IconButton>
       </div>
@@ -101,46 +104,40 @@ function BarTransport({
   shuffle,
   repeat,
   playing,
+  enabled,
+  transport,
 }: {
   shuffle: boolean;
   repeat: RepeatMode;
   playing: boolean;
+  enabled: boolean;
+  transport: ReturnType<typeof useTransport>;
 }) {
   return (
     <div className="flex items-center justify-center gap-2">
-      <IconButton
-        label="Shuffle"
-        active={shuffle}
-        onClick={() => void api.setShuffle(!shuffle).catch(() => undefined)}
-      >
+      <IconButton label="Shuffle" active={shuffle} onClick={() => transport.setShuffle(!shuffle)}>
         <Shuffle key={String(shuffle)} size={15} className="t-pop" />
       </IconButton>
-      <IconButton
-        label="Previous"
-        nudge="prev"
-        onClick={() => void api.previous().catch(() => undefined)}
-      >
+      <IconButton label="Previous" nudge="prev" disabled={!enabled} onClick={transport.previous}>
         <SkipBack size={16} />
       </IconButton>
       <button
         type="button"
         title={playing ? "Pause" : "Play"}
-        onClick={() => void api.toggle().catch(() => undefined)}
-        className="t-btn flex h-10 w-10 items-center justify-center rounded-full bg-app-play text-app-play-fg"
+        aria-label={playing ? "Pause" : "Play"}
+        disabled={!enabled}
+        onClick={transport.toggle}
+        className="t-btn flex h-10 w-10 items-center justify-center rounded-full bg-app-play text-app-play-fg disabled:opacity-40"
       >
         <PlayPauseIcon playing={playing} size={16} />
       </button>
-      <IconButton
-        label="Next"
-        nudge="next"
-        onClick={() => void api.next().catch(() => undefined)}
-      >
+      <IconButton label="Next" nudge="next" disabled={!enabled} onClick={transport.next}>
         <SkipForward size={16} />
       </IconButton>
       <IconButton
         label="Repeat"
         active={repeat !== "off"}
-        onClick={() => void api.setRepeat(nextRepeat(repeat)).catch(() => undefined)}
+        onClick={() => transport.setRepeat(nextRepeat(repeat))}
       >
         {repeat === "one" ? (
           <Repeat1 key="one" size={15} className="t-pop" />
@@ -152,22 +149,18 @@ function BarTransport({
   );
 }
 
-function nextRepeat(mode: RepeatMode): RepeatMode {
-  if (mode === "off") return "all";
-  if (mode === "all") return "one";
-  return "off";
-}
-
 function IconButton({
   label,
   active,
   nudge,
+  disabled,
   onClick,
   children,
 }: {
   label: string;
   active?: boolean;
   nudge?: "next" | "prev";
+  disabled?: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -176,8 +169,9 @@ function IconButton({
       type="button"
       title={label}
       aria-label={label}
+      disabled={disabled}
       onClick={onClick}
-      className={`t-btn flex h-8 w-8 items-center justify-center rounded-md ${
+      className={`t-btn flex h-8 w-8 items-center justify-center rounded-md disabled:opacity-40 ${
         nudge === "next" ? "t-btn-next" : nudge === "prev" ? "t-btn-prev" : ""
       } ${active ? "text-app-accent" : "text-app-subtle hover:text-app-text"}`}
     >

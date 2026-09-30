@@ -15,6 +15,7 @@ interface AppState {
   coverUrl: string | null;
   status: string | null;
   statusTone: StatusTone;
+  error: string | null;
   playlists: Playlist[];
   libraryRoots: string[];
   libraryEpoch: number;
@@ -34,9 +35,11 @@ interface AppState {
   vizBorder: string;
   vizGlow: string;
   tagFocusPath: string | null;
+  droppedPaths: string[] | null;
   setTab: (tab: AppTab) => void;
   setNowPlayingOpen: (open: boolean) => void;
   setStatus: (status: string | null, tone?: StatusTone) => void;
+  clearError: () => void;
   setPlaylists: (playlists: Playlist[]) => void;
   setLibraryRoots: (roots: string[]) => void;
   bumpLibrary: () => void;
@@ -46,6 +49,7 @@ interface AppState {
   setPageLoading: (loading: boolean) => void;
   setCanGoBack: (canGoBack: boolean) => void;
   setTagFocusPath: (path: string | null) => void;
+  setDroppedPaths: (paths: string[] | null) => void;
   setAppearance: (theme: string, accent: string, customThemes?: CustomTheme[]) => void;
   setMinimizeMovement: (enabled: boolean) => void;
   setVisualizer: (settings: {
@@ -59,6 +63,8 @@ interface AppState {
   refreshCover: (path: string | null) => Promise<void>;
 }
 
+let statusTimer = 0;
+
 export const useAppStore = create<AppState>((set, get) => ({
   tab: "player",
   nowPlayingOpen: false,
@@ -66,6 +72,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   coverUrl: null,
   status: null,
   statusTone: "error",
+  error: null,
   playlists: [],
   libraryRoots: [],
   libraryEpoch: 0,
@@ -85,6 +92,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   vizBorder: "#e8f3ff",
   vizGlow: "#4aa3ff",
   tagFocusPath: null,
+  droppedPaths: null,
   setTab: (tab) => set({ tab }),
   setNowPlayingOpen: (nowPlayingOpen) => {
     set({ nowPlayingOpen });
@@ -92,8 +100,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       void get().refreshCover(get().snapshot?.current?.path ?? null);
     }
   },
-  setStatus: (status, tone = "error") =>
-    set({ status, statusTone: status ? tone : "error" }),
+  setStatus: (status, tone = "error") => {
+    if (typeof window !== "undefined") window.clearTimeout(statusTimer);
+    if (!status) {
+      set({ status: null, statusTone: "error" });
+      return;
+    }
+    set({ status, statusTone: tone });
+    if (tone === "info" && typeof window !== "undefined") {
+      statusTimer = window.setTimeout(() => {
+        if (get().status === status && get().statusTone === "info") {
+          set({ status: null, statusTone: "error" });
+        }
+      }, 4000);
+    }
+  },
+  clearError: () => set({ error: null }),
   setPlaylists: (playlists) => set({ playlists }),
   setLibraryRoots: (libraryRoots) => set({ libraryRoots }),
   bumpLibrary: () => set({ libraryEpoch: get().libraryEpoch + 1 }),
@@ -103,6 +125,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPageLoading: (pageLoading) => set({ pageLoading }),
   setCanGoBack: (canGoBack) => set({ canGoBack }),
   setTagFocusPath: (tagFocusPath) => set({ tagFocusPath }),
+  setDroppedPaths: (droppedPaths) => set({ droppedPaths }),
   setAppearance: (theme, accent, customThemes) => {
     const nextThemes = customThemes ?? get().customThemes;
     applyAppearance(theme, accent, nextThemes);
@@ -122,15 +145,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       ? {
           ...snapshot.eq,
           builtins:
-            snapshot.eq.builtins.length > 0
-              ? snapshot.eq.builtins
-              : (prevEq?.builtins ?? []),
+            snapshot.eq.builtins.length > 0 ? snapshot.eq.builtins : (prevEq?.builtins ?? []),
         }
       : snapshot.eq;
     set({
       snapshot: { ...snapshot, eq },
-      status: snapshot.error,
-      statusTone: "error",
+      error: snapshot.error,
       positionMs: snapshot.positionMs,
       durationMs: snapshot.durationMs,
     });
@@ -153,10 +173,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     try {
       const cover = await api.coverArt(path);
+      if (get().snapshot?.current?.path !== path) return;
       set({
         coverUrl: cover ? pictureSrc(cover.mime, cover.dataBase64) : null,
       });
     } catch {
+      if (get().snapshot?.current?.path !== path) return;
       set({ coverUrl: null });
     }
   },

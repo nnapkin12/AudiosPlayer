@@ -1,9 +1,14 @@
 //! Search lists titles via yt-dlp `--flat-playlist`. Play then downloads a
 //! local temp file, remuxes it for rodio, and deletes it when the track changes.
 
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -118,7 +123,7 @@ pub fn fetch_cover_image(url: &str) -> AppResult<Vec<u8>> {
             "Mozilla/5.0",
             url,
         ])
-        .output()
+        .output_within(Duration::from_secs(30))
         .map_err(|error| AppError::msg(format!("could not run curl: {error}")))?;
     if !output.status.success() {
         return Err(AppError::msg("couldn't download that image"));
@@ -172,41 +177,53 @@ pub fn play_source<'a>(url: &'a str, page_url: Option<&'a str>) -> &'a str {
 }
 
 pub fn cache_media(url: &str) -> AppResult<PathBuf> {
+    prepare_for_player(fetch_original(url)?)
+}
+
+/// Download (or reuse) the cached original, without remuxing for rodio.
+fn fetch_original(url: &str) -> AppResult<PathBuf> {
+    fail_if_cancelled()?;
     let url = url.trim();
     if url.is_empty() {
         return Err(AppError::msg("missing stream url"));
     }
     let id = video_id_from_url(url).unwrap_or_else(|| stable_id(url));
     if let Some(existing) = existing_cache(&cache_dir(), &id) {
-        return prepare_for_player(existing);
+        return Ok(existing);
     }
 
+    let _inflight = InflightGuard::new(id.clone());
     let mut errors = Vec::new();
     if let Ok(info) = probe_info(url) {
+        fail_if_cancelled()?;
         if let Some(picked) = pick_audio(&info) {
             if let Some(format_id) = picked.format_id.as_deref() {
+                fail_if_cancelled()?;
                 match download_with_format(url, format_id) {
-                    Ok(path) => return prepare_for_player(path),
+                    Ok(path) => return Ok(path),
                     Err(error) => errors.push(error),
                 }
             }
             if let Some(direct) = picked.url.as_deref() {
+                fail_if_cancelled()?;
                 match save_direct(&id, direct, &picked.ext) {
-                    Ok(path) => return prepare_for_player(path),
+                    Ok(path) => return Ok(path),
                     Err(error) => errors.push(error),
                 }
             }
         }
     }
 
+    fail_if_cancelled()?;
     match download_default(url) {
-        Ok(path) => return prepare_for_player(path),
+        Ok(path) => return Ok(path),
         Err(error) => errors.push(error),
     }
 
+    fail_if_cancelled()?;
     if let Some(video_id) = video_id_from_url(url) {
         match download_via_frontends(&video_id) {
-            Ok(path) => return prepare_for_player(path),
+            Ok(path) => return Ok(path),
             Err(error) => errors.push(error),
         }
     }
@@ -217,16 +234,25 @@ pub fn cache_media(url: &str) -> AppResult<PathBuf> {
 }
 
 pub fn save_media(url: &str, dest: &Path) -> AppResult<PathBuf> {
-    let cached = cache_media(url)?;
-    let dest = match cached.extension() {
-        Some(ext) => dest.with_extension(ext),
-        None => dest.to_path_buf(),
-    };
+    let cached = fetch_original(url)?;
+    let dest = save_dest(&cached, dest);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::copy(&cached, &dest)?;
     Ok(dest)
+}
+
+/// Keep the name the user picked. Only add an extension when they omitted one.
+fn save_dest(cached: &Path, dest: &Path) -> PathBuf {
+    if dest.extension().is_some() {
+        dest.to_path_buf()
+    } else {
+        match cached.extension() {
+            Some(ext) => dest.with_extension(ext),
+            None => dest.to_path_buf(),
+        }
+    }
 }
 
 pub fn drop_temps_except(keep: Option<&Path>) {
@@ -249,7 +275,10 @@ fn drop_temps_except_in(dir: &Path, keep: Option<&Path>) {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        if name.ends_with(".part") {
+        if name.ends_with(".part") || name.ends_with(".ytdl") {
+            continue;
+        }
+        if is_inflight_name(name) {
             continue;
         }
         let _ = std::fs::remove_file(path);
@@ -258,6 +287,72 @@ fn drop_temps_except_in(dir: &Path, keep: Option<&Path>) {
 
 pub fn clear_temps() {
     drop_temps_except(None);
+}
+
+thread_local! {
+    static CANCEL: RefCell<Option<Arc<dyn Fn() -> bool + Send + Sync>>> = RefCell::new(None);
+}
+
+struct CancelOnDrop;
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        CANCEL.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+/// Run `work` so nested `output_within` calls abort when `cancel` is true.
+pub(crate) fn with_cancel<R>(
+    cancel: Arc<dyn Fn() -> bool + Send + Sync>,
+    work: impl FnOnce() -> R,
+) -> R {
+    CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
+    let _guard = CancelOnDrop;
+    work()
+}
+
+fn search_cancelled() -> bool {
+    CANCEL.with(|slot| slot.borrow().as_ref().is_some_and(|check| check()))
+}
+
+fn fail_if_cancelled() -> AppResult<()> {
+    if search_cancelled() {
+        Err(AppError::msg("search play was replaced"))
+    } else {
+        Ok(())
+    }
+}
+
+fn inflight() -> &'static Mutex<HashSet<String>> {
+    static SET: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SET.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+struct InflightGuard(String);
+
+impl InflightGuard {
+    fn new(id: String) -> Self {
+        inflight()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone());
+        Self(id)
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        inflight()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+fn is_inflight_name(name: &str) -> bool {
+    let set = inflight().lock().unwrap_or_else(|e| e.into_inner());
+    set.iter()
+        .any(|id| name == id || name.starts_with(&format!("{id}.")))
 }
 
 pub fn track_for(path: &Path, title: &str) -> Track {
@@ -561,13 +656,7 @@ pub fn pick_invidious_audio(value: &Value) -> Option<(String, String)> {
             .and_then(Value::as_i64)
             .or_else(|| format.get("audioSampleRate").and_then(Value::as_i64))
             .unwrap_or(0);
-        let ext = if kind.contains("webm") {
-            "webm"
-        } else if kind.contains("mp4") {
-            "m4a"
-        } else {
-            "m4a"
-        };
+        let ext = if kind.contains("webm") { "webm" } else { "m4a" };
         if best
             .as_ref()
             .map(|(best_rate, _, _)| bitrate > *best_rate)
@@ -591,7 +680,7 @@ pub fn pick_piped_audio(value: &Value) -> Option<(String, String)> {
 fn http_get(url: &str) -> AppResult<String> {
     let output = spawn_tool(find_curl()?)
         .args(["-fsSL", "--max-time", "25", "-A", "Mozilla/5.0", url])
-        .output()
+        .output_within(Duration::from_secs(35))
         .map_err(|error| AppError::msg(format!("could not run curl: {error}")))?;
     if !output.status.success() {
         return Err(AppError::msg("could not reach an audio source"));
@@ -605,7 +694,7 @@ fn http_download(url: &str, dest: &Path) -> AppResult<()> {
             .args(["-fsSL", "--max-time", "90", "-A", "Mozilla/5.0", "-o"])
             .arg(dest)
             .arg(url)
-            .output()
+            .output_within(Duration::from_secs(100))
             .map_err(|error| AppError::msg(format!("could not run curl: {error}")))?;
         if output.status.success() {
             return Ok(());
@@ -700,7 +789,7 @@ fn remux_for_player(path: &Path) -> AppResult<PathBuf> {
             .args(["-vn"])
             .args(extra)
             .arg(&dest)
-            .output()
+            .output_within(TOOL_TRANSCODE_TIMEOUT)
             .map_err(|error| AppError::msg(format!("could not run ffmpeg: {error}")))?;
         if output.status.success()
             && dest.is_file()
@@ -1036,9 +1125,14 @@ fn clean_query(query: &str) -> AppResult<String> {
 }
 
 fn node_available() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(probe_node)
+}
+
+fn probe_node() -> bool {
     spawn_tool("node")
         .arg("--version")
-        .output()
+        .output_within(TOOL_PROBE_TIMEOUT)
         .map(|output| output.status.success())
         .unwrap_or(false)
 }
@@ -1072,6 +1166,66 @@ const CHILD_ENV_STRIP: &[&str] = &[
     "GST_PLUGIN_SYSTEM_PATH_1_0",
     "GI_TYPELIB_PATH",
 ];
+
+/// Wall-clock limits for child processes. `.output()` alone waits forever on
+/// a hung network call or a JS challenge that never resolves.
+pub(crate) const TOOL_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
+pub(crate) const TOOL_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(240);
+pub(crate) const TOOL_TRANSCODE_TIMEOUT: Duration = Duration::from_secs(600);
+
+pub(crate) trait OutputWithin {
+    /// Like `Command::output`, but kills the child after `timeout`.
+    fn output_within(&mut self, timeout: Duration) -> std::io::Result<Output>;
+}
+
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+impl OutputWithin for Command {
+    fn output_within(&mut self, timeout: Duration) -> std::io::Result<Output> {
+        self.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = self.spawn()?;
+        let out = drain(child.stdout.take());
+        let err = drain(child.stderr.take());
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if search_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "search play was replaced",
+                ));
+            }
+            if started.elapsed() > timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("gave up after {} s", timeout.as_secs()),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        Ok(Output {
+            status,
+            stdout: out.join().unwrap_or_default(),
+            stderr: err.join().unwrap_or_default(),
+        })
+    }
+}
 
 pub(crate) fn spawn_tool(bin: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(bin);
@@ -1153,7 +1307,7 @@ fn keep_child_env(key: &OsStr) -> bool {
 fn env_value_is_bundled(value: &OsStr) -> bool {
     value
         .to_string_lossy()
-        .split(|ch| ch == ':' || ch == '\n' || ch == ';')
+        .split([':', '\n', ';'])
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .any(|part| is_bundled_path(Path::new(part)))
@@ -1196,7 +1350,7 @@ fn run_ytdlp(args: &[&str]) -> AppResult<String> {
     }
     let output = command
         .args(args)
-        .output()
+        .output_within(TOOL_DOWNLOAD_TIMEOUT)
         .map_err(|error| AppError::msg(format!("could not run yt-dlp: {error}")))?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
@@ -1206,6 +1360,14 @@ fn run_ytdlp(args: &[&str]) -> AppResult<String> {
 }
 
 fn find_ytdlp() -> AppResult<PathBuf> {
+    static CACHED: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    match CACHED.get_or_init(probe_ytdlp) {
+        Ok(path) => Ok(path.clone()),
+        Err(msg) => Err(AppError::msg(msg.clone())),
+    }
+}
+
+fn probe_ytdlp() -> Result<PathBuf, String> {
     if let Ok(path) = std::env::var("AUDIOS_YTDLP") {
         let path = PathBuf::from(path);
         if path.is_file() && !is_bundled_path(&path) {
@@ -1261,13 +1423,16 @@ fn find_ytdlp() -> AppResult<PathBuf> {
         return Ok(path);
     }
 
-    Err(AppError::msg(
-        "yt-dlp is required for search. apt is usually too old; install a current copy with: curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp && chmod a+rx ~/.local/bin/yt-dlp",
-    ))
+    Err(
+        "yt-dlp is required for search. apt is usually too old; install a current copy with: curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ~/.local/bin/yt-dlp && chmod a+rx ~/.local/bin/yt-dlp".into(),
+    )
 }
 
 fn ytdlp_version(bin: &Path) -> Option<(u16, u8, u8)> {
-    let output = spawn_tool(bin).arg("--version").output().ok()?;
+    let output = spawn_tool(bin)
+        .arg("--version")
+        .output_within(TOOL_PROBE_TIMEOUT)
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -1309,6 +1474,9 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::path::Path;
+    use std::process::Command;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     #[test]
     fn parses_extracted_stream() {
@@ -1484,6 +1652,52 @@ mod tests {
         drop_temps_except_in(dir.path(), Some(&keep));
         assert!(keep.is_file());
         assert!(!gone.exists());
+    }
+
+    #[test]
+    fn save_keeps_the_users_extension() {
+        let cached = Path::new("/cache/id.m4a");
+        assert_eq!(
+            save_dest(cached, Path::new("/home/me/song.ogg")),
+            Path::new("/home/me/song.ogg")
+        );
+        assert_eq!(
+            save_dest(cached, Path::new("/home/me/song")),
+            Path::new("/home/me/song.m4a")
+        );
+    }
+
+    #[test]
+    fn drop_temps_keeps_an_in_flight_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let keep = dir.path().join("vid11111111.m4a");
+        let gone = dir.path().join("old.m4a");
+        std::fs::write(&keep, b"partial").unwrap();
+        std::fs::write(&gone, b"gone").unwrap();
+        let _guard = InflightGuard::new("vid11111111".into());
+        drop_temps_except_in(dir.path(), None);
+        assert!(keep.is_file(), "in-flight cache must survive a prune");
+        assert!(!gone.exists());
+    }
+
+    #[test]
+    fn output_within_stops_when_search_is_cancelled() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let flag = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&flag);
+        let worker = std::thread::spawn(move || {
+            with_cancel(Arc::new(move || seen.load(Ordering::SeqCst)), || {
+                Command::new("sleep")
+                    .arg("30")
+                    .output_within(Duration::from_secs(20))
+            })
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        flag.store(true, Ordering::SeqCst);
+        let result = worker.join().expect("sleep thread");
+        assert!(result.is_err(), "cancelled child must not run to timeout");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
     }
 
     #[test]

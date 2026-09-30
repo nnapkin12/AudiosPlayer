@@ -87,6 +87,10 @@ fn walk_audio_files(path: &Path) -> AppResult<Vec<PathBuf>> {
             })
             .unwrap_or(false)
         {
+            // A tag write that died mid-way leaves a hidden copy of the song.
+            if crate::tags::is_stale_staging(file_path) {
+                let _ = std::fs::remove_file(file_path);
+            }
             continue;
         }
         if is_audio_path(file_path) {

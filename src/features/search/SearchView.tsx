@@ -49,7 +49,7 @@ export function SearchView() {
     if (fetchingUrl === hit.url) return;
     if (hitIsCurrent(hit, current)) {
       try {
-        applySnapshot(await api.toggle());
+        await api.toggle();
       } catch (error) {
         setStatus(errorMessage(error, "Could not control playback"));
       }
@@ -110,8 +110,8 @@ export function SearchView() {
         <div>
           <h1 className="text-[28px] font-semibold tracking-tight">Search</h1>
           <p className="mt-2 max-w-2xl text-[15px] font-medium leading-6 text-app-muted">
-            Find songs on YouTube and SoundCloud. Paste a link from either, or from
-            another site yt-dlp supports. Play starts right away. Save a copy if you want to keep it.
+            Find songs on YouTube and SoundCloud. Paste a link from either, or from another site
+            yt-dlp supports. Play starts right away. Save a copy if you want to keep it.
           </p>
         </div>
 
@@ -149,9 +149,11 @@ export function SearchView() {
           </button>
         </form>
 
-        {results.length === 0 && !loading ? (
+        {results.length === 0 ? (
           <p className="text-[15px] text-app-subtle">
-            Type a search and press Enter for results, or Play to start the first match.
+            {loading
+              ? "Searching…"
+              : "Type a search and press Enter for results, or Play to start the first match."}
           </p>
         ) : null}
 
@@ -188,11 +190,7 @@ export function SearchView() {
                         {hit.title}
                       </button>
                       <span className="block truncate text-[13px] font-medium text-app-muted">
-                        {fetching
-                          ? "Loading…"
-                          : showPause
-                            ? "Playing"
-                            : (hit.channel ?? "Play")}
+                        {fetching ? "Loading…" : showPause ? "Playing" : (hit.channel ?? "Play")}
                       </span>
                       <button
                         type="button"

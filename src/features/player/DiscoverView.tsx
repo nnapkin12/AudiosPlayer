@@ -12,6 +12,7 @@ import {
   type AlbumGroup,
   type ArtistGroup,
 } from "@/features/player/catalog";
+import { peekDiscover, setDiscover } from "@/features/player/discoverCache";
 import { openBrowsePage } from "@/features/player/browse";
 import { BrowseBack } from "@/features/player/Playlists";
 import { api, pickImageFile } from "@/lib/api";
@@ -19,9 +20,6 @@ import { CoverPicture, useNearView } from "@/lib/covers";
 import { errorMessage, pictureSrc } from "@/lib/format";
 import type { Track } from "@/lib/types";
 import { useAppStore } from "@/store/useAppStore";
-
-let discoverTracks: Track[] | null = null;
-let discoverSource = "";
 
 function sourceKeyOf(roots: string[], playlists: { id: string }[]): string {
   return `${roots.join("\n")}\n${playlists.map((playlist) => playlist.id).join("\n")}`;
@@ -53,16 +51,17 @@ export function DiscoverView({
   const libraryRoots = useAppStore((state) => state.libraryRoots);
   const playlists = useAppStore((state) => state.playlists);
   const setStatus = useAppStore((state) => state.setStatus);
-  const [tracks, setTracks] = useState<Track[] | null>(
-    discoverSource === sourceKeyOf(libraryRoots, playlists) ? discoverTracks : null,
+  const [tracks, setTracks] = useState<Track[] | null>(() =>
+    peekDiscover(sourceKeyOf(libraryRoots, playlists)),
   );
   const [failed, setFailed] = useState(false);
 
   const sourceKey = sourceKeyOf(libraryRoots, playlists);
 
   useEffect(() => {
-    if (discoverTracks && discoverSource === sourceKey) {
-      setTracks(discoverTracks);
+    const cached = peekDiscover(sourceKey);
+    if (cached) {
+      setTracks(cached);
       return;
     }
     if (libraryRoots.length === 0 && playlists.length === 0) {
@@ -79,8 +78,7 @@ export function DiscoverView({
           playlists.map((playlist) => playlist.id),
         );
         if (cancelled) return;
-        discoverTracks = next;
-        discoverSource = sourceKey;
+        setDiscover(sourceKey, next);
         setTracks(next);
       } catch (error) {
         if (cancelled) return;
@@ -95,15 +93,16 @@ export function DiscoverView({
   }, [sourceKey, libraryRoots, playlists, setStatus]);
 
   const catalog = useMemo(() => buildCatalog(tracks ?? []), [tracks]);
-  const artistName = browse.kind === "artist" ? browse.name : browse.kind === "album" ? browse.artist : null;
+  const artistName =
+    browse.kind === "artist" ? browse.name : browse.kind === "album" ? browse.artist : null;
   const artist = artistName
-    ? catalog.artists.find(
-        (item) => item.name === artistName || item.key === artistName.toLocaleLowerCase(),
-      ) ?? null
+    ? (catalog.artists.find(
+        (item) => item.name === artistName || item.key === artistKey(artistName),
+      ) ?? null)
     : null;
   const album =
     browse.kind === "album" && artist
-      ? artist.albums.find((item) => item.name === browse.album) ?? null
+      ? (artist.albums.find((item) => item.name === browse.album) ?? null)
       : null;
 
   if (libraryRoots.length === 0 && playlists.length === 0) {
@@ -130,7 +129,9 @@ export function DiscoverView({
     return (
       <div className="px-5 py-8">
         <h1 className="text-[28px] font-semibold tracking-tight text-app-text">Discover</h1>
-        <p className="mt-3 text-[15px] font-medium text-app-muted">The library could not be read.</p>
+        <p className="mt-3 text-[15px] font-medium text-app-muted">
+          The library could not be read.
+        </p>
       </div>
     );
   }
@@ -145,14 +146,7 @@ export function DiscoverView({
         />
       );
     }
-    return (
-      <AlbumPage
-        artist={artist}
-        album={album}
-        onPlay={onPlay}
-        onContext={onContext}
-      />
-    );
+    return <AlbumPage artist={artist} album={album} onPlay={onPlay} onContext={onContext} />;
   }
 
   if (browse.kind === "artist") {
@@ -188,7 +182,10 @@ function ArtistIndex({
 }) {
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
-  const matches = useMemo(() => (searching ? filterArtists(artists, query) : featured), [artists, featured, query, searching]);
+  const matches = useMemo(
+    () => (searching ? filterArtists(artists, query) : featured),
+    [artists, featured, query, searching],
+  );
 
   function openMatch(name: string) {
     void openBrowsePage({ kind: "artist", name, all: true });
@@ -291,11 +288,14 @@ function ArtistFace({ artist, className }: { artist: ArtistGroup; className?: st
     if (!near.ready) return;
     let cancelled = false;
     setCustom(undefined);
-    void api.artistImage(artist.key).then((cover) => {
-      if (!cancelled) setCustom(cover ? pictureSrc(cover.mime, cover.dataBase64) : null);
-    }).catch(() => {
-      if (!cancelled) setCustom(null);
-    });
+    void api
+      .artistImage(artist.key)
+      .then((cover) => {
+        if (!cancelled) setCustom(cover ? pictureSrc(cover.mime, cover.dataBase64) : null);
+      })
+      .catch(() => {
+        if (!cancelled) setCustom(null);
+      });
     return () => {
       cancelled = true;
     };
@@ -444,7 +444,9 @@ function ArtistPage({
       </div>
       {artist.albums.length > 0 ? (
         <div className="px-5 pb-2">
-          <p className="text-[13px] font-semibold uppercase tracking-[0.06em] text-app-muted">Albums</p>
+          <p className="text-[13px] font-semibold uppercase tracking-[0.06em] text-app-muted">
+            Albums
+          </p>
           <div className="mt-2 flex gap-3 overflow-x-auto pb-2">
             {artist.albums.map((album) => (
               <button
@@ -456,7 +458,9 @@ function ArtistPage({
                 className="w-36 shrink-0 rounded-xl p-2 text-left hover:bg-app-hover"
               >
                 <CoverPicture path={album.tracks[0].path} className="h-32 w-32 rounded-lg" />
-                <span className="mt-2 block truncate text-[14px] font-semibold text-app-text">{album.name}</span>
+                <span className="mt-2 block truncate text-[14px] font-semibold text-app-text">
+                  {album.name}
+                </span>
                 <span className="block text-[13px] font-medium text-app-muted">
                   {album.tracks.length} song{album.tracks.length === 1 ? "" : "s"}
                 </span>
@@ -465,7 +469,9 @@ function ArtistPage({
           </div>
         </div>
       ) : null}
-      <p className="px-5 pb-1 text-[13px] font-semibold uppercase tracking-[0.06em] text-app-muted">Songs</p>
+      <p className="px-5 pb-1 text-[13px] font-semibold uppercase tracking-[0.06em] text-app-muted">
+        Songs
+      </p>
       <TrackList
         tracks={songs}
         onPlay={(track) => onPlay(songs, track.path)}
@@ -553,12 +559,15 @@ function MissingPage({
   );
 }
 
-async function playOrToggle(tracks: Track[], onPlay: (tracks: Track[], startPath?: string) => void) {
+async function playOrToggle(
+  tracks: Track[],
+  onPlay: (tracks: Track[], startPath?: string) => void,
+) {
   const store = useAppStore.getState();
   const current = store.snapshot?.current?.path ?? null;
   if (current && tracks.some((track) => track.path === current)) {
     try {
-      store.applySnapshot(await api.toggle());
+      await api.toggle();
     } catch (error) {
       store.setStatus(errorMessage(error, "Could not control playback"));
     }

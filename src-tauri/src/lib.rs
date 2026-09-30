@@ -3,6 +3,7 @@ mod commands;
 mod desktop;
 mod eq;
 mod error;
+mod launch;
 mod library;
 #[cfg(target_os = "linux")]
 mod media;
@@ -19,11 +20,19 @@ mod watch;
 
 use persist::Store;
 use player::Player;
+use std::path::PathBuf;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            if let Some(player) = app.try_state::<Player>() {
+                let cwd = PathBuf::from(cwd);
+                launch::open_in_player(&player, launch::media_paths(argv, &cwd));
+                player.raise_window();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -35,11 +44,13 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             media::start(player.clone());
             let remote = remote::Remote::new(app.handle().clone(), player.clone(), persist.clone());
-            app.manage(player);
+            app.manage(player.clone());
             app.manage(remote);
             watch::spawn(app.handle().clone(), persist);
             #[cfg(target_os = "linux")]
             desktop::install();
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            launch::open_in_player(&player, launch::media_paths(std::env::args(), &cwd));
             apply_window_icon(app);
             Ok(())
         })
@@ -82,6 +93,7 @@ pub fn run() {
             commands::add_picture,
             commands::remove_picture,
             commands::export_picture,
+            commands::picture_preview,
             commands::add_custom_field,
             commands::remove_custom_field,
             commands::cover_art,

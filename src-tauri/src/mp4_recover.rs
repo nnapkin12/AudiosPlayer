@@ -52,14 +52,21 @@ pub(crate) fn read_lofty(path: &Path) -> AppResult<lofty::file::TaggedFile> {
 }
 
 /// Bytes Lofty can parse, when the file uses 64-bit atom sizes that fit in 32 bits.
-/// `None` means the file is not an MP4, or it has no extended atoms to adjust.
+/// `None` means the file is not an MP4, has no extended atoms, or is too large
+/// to rewrite in memory (a 600 MB audiobook is left alone).
+pub const RECOVER_CAP: u64 = 48 * 1024 * 1024;
+
 pub fn for_lofty(path: &Path) -> AppResult<Option<Vec<u8>>> {
     let mut file = File::open(path)?;
-    let mut magic = [0u8; 8];
-    if file.read(&mut magic)? < 8 || &magic[4..8] != b"ftyp" {
+    let len = file.metadata()?.len();
+    if !(8..=RECOVER_CAP).contains(&len) {
         return Ok(None);
     }
-    let data = std::fs::read(path)?;
+    let mut data = Vec::with_capacity(len as usize);
+    file.read_to_end(&mut data)?;
+    if data.len() < 8 || &data[4..8] != b"ftyp" {
+        return Ok(None);
+    }
     Ok(rewrite(&data))
 }
 
@@ -301,7 +308,7 @@ mod tests {
                 if next + 8 > data.len() {
                     return None;
                 }
-                return Some(data[next + 4..next + 8].try_into().ok()?);
+                return data[next + 4..next + 8].try_into().ok();
             }
             pos += size;
         }

@@ -71,32 +71,40 @@ impl VizTap {
     }
 }
 
-fn bands_from(window: &[f32; FFT_LEN], _rate: u32) -> [u8; BANDS] {
+fn bands_from(window: &[f32; FFT_LEN], rate: u32) -> [u8; BANDS] {
     let mag = fft_magnitude(window);
     let mut out = [0u8; BANDS];
-    let last = (FFT_LEN / 2) as f32;
-    for band in 0..BANDS {
-        let start = log_bin(band as f32 / BANDS as f32, last);
-        let end = log_bin((band as f32 + 1.0) / BANDS as f32, last).max(start + 1);
-        let mut energy = 0.0f32;
-        let mut count = 0u32;
-        for bin in start..end.min(FFT_LEN / 2) {
-            energy += mag[bin] * mag[bin];
-            count += 1;
-        }
-        let level = if count == 0 {
+    for (band, slot) in out.iter_mut().enumerate() {
+        let (start, end) = band_bins(band, rate);
+        let bins = &mag[start.min(FFT_LEN / 2)..end.min(FFT_LEN / 2)];
+        let level = if bins.is_empty() {
             0.0
         } else {
-            (energy / count as f32).sqrt()
+            let energy: f32 = bins.iter().map(|value| value * value).sum();
+            (energy / bins.len() as f32).sqrt()
         };
         let shaped = (level * 4.0).clamp(0.0, 1.0).powf(0.65);
-        out[band] = (shaped * 255.0).round() as u8;
+        *slot = (shaped * 255.0).round() as u8;
     }
     out
 }
 
-fn log_bin(t: f32, last: f32) -> usize {
-    last.powf(t).floor() as usize
+/// Log-spaced 20 Hz .. 20 kHz (or Nyquist, whichever is lower), so a 96 kHz
+/// file does not push the kick drum into the first two bars.
+fn band_bins(band: usize, rate: u32) -> (usize, usize) {
+    let nyquist = (rate as f32 / 2.0).max(1.0);
+    let f_min = 20.0_f32.min(nyquist / 4.0).max(1.0);
+    let f_max = 20_000.0_f32.min(nyquist * 0.98).max(f_min + 1.0);
+    let lo = f_min * (f_max / f_min).powf(band as f32 / BANDS as f32);
+    let hi = f_min * (f_max / f_min).powf((band as f32 + 1.0) / BANDS as f32);
+    let start = hz_to_bin(lo, rate);
+    let end = hz_to_bin(hi, rate).max(start + 1);
+    (start, end)
+}
+
+fn hz_to_bin(hz: f32, rate: u32) -> usize {
+    let bin = (hz * FFT_LEN as f32 / rate.max(1) as f32).floor() as usize;
+    bin.min(FFT_LEN / 2)
 }
 
 fn fft_magnitude(input: &[f32; FFT_LEN]) -> [f32; FFT_LEN / 2] {
@@ -198,12 +206,10 @@ mod tests {
             .max_by_key(|(_, value)| *value)
             .map(|(index, _)| index)
             .unwrap();
-        let bin = freq * FFT_LEN as f32 / rate as f32;
         let mut expected = 0usize;
-        let last = (FFT_LEN / 2) as f32;
         for band in 0..BANDS {
-            let start = log_bin(band as f32 / BANDS as f32, last);
-            let end = log_bin((band as f32 + 1.0) / BANDS as f32, last).max(start + 1);
+            let (start, end) = band_bins(band, rate);
+            let bin = freq * FFT_LEN as f32 / rate as f32;
             if (start as f32) <= bin && bin < end as f32 {
                 expected = band;
                 break;
@@ -214,5 +220,36 @@ mod tests {
             "peak band {peak}, expected {expected}, bands {bands:?}"
         );
         assert!(bands[peak] > 40, "peak too quiet: {bands:?}");
+    }
+
+    #[test]
+    fn a_mid_tone_lands_in_the_same_region_at_44k_and_96k() {
+        let freq = 1_000.0f32;
+        let mut at_44 = [0.0f32; FFT_LEN];
+        let mut at_96 = [0.0f32; FFT_LEN];
+        for index in 0..FFT_LEN {
+            at_44[index] = (2.0 * std::f32::consts::PI * freq * index as f32 / 44_100.0).sin();
+            at_96[index] = (2.0 * std::f32::consts::PI * freq * index as f32 / 96_000.0).sin();
+        }
+        let peak_44 = bands_from(&at_44, 44_100)
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, value)| *value)
+            .map(|(index, _)| index)
+            .unwrap();
+        let peak_96 = bands_from(&at_96, 96_000)
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, value)| *value)
+            .map(|(index, _)| index)
+            .unwrap();
+        assert!(
+            peak_44.abs_diff(peak_96) <= 2,
+            "1 kHz must not jump when the file rate changes (44.1k={peak_44}, 96k={peak_96})"
+        );
+        assert!(
+            peak_44 < BANDS - 8 && peak_96 < BANDS - 8,
+            "1 kHz is not an ultrasonic bar (44.1k={peak_44}, 96k={peak_96})"
+        );
     }
 }

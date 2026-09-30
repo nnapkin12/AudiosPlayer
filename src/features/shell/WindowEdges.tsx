@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { isTauri } from "@/lib/api";
 
-type Edge =
-  | "East"
-  | "North"
-  | "NorthWest"
-  | "South"
-  | "SouthEast"
-  | "SouthWest"
-  | "West";
+type Edge = "East" | "North" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
 
 const EDGES: Array<{ direction: Edge; className: string }> = [
   { direction: "North", className: "top-0 left-2 right-36 h-1 cursor-ns-resize" },

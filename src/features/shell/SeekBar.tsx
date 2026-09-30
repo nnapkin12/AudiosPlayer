@@ -16,23 +16,31 @@ export function SeekBar({
 }) {
   const trackPath = useAppStore((state) => state.snapshot?.current?.path ?? null);
   const holding = useRef(false);
+  const dragRef = useRef<number | null>(null);
   const [drag, setDrag] = useState<number | null>(null);
   const max = Math.max(duration, 1);
   const shown = drag ?? Math.min(position, duration);
   const ratio = duration > 0 ? Math.min(1, Math.max(0, shown / max)) : 0;
 
-  function endDrag() {
+  function commitDrag() {
+    const next = dragRef.current;
     holding.current = false;
+    dragRef.current = null;
     setDrag(null);
+    if (next == null) return;
+    useAppStore.setState({ positionMs: next });
+    onSeek(next);
   }
 
   useEffect(() => {
-    endDrag();
+    holding.current = false;
+    dragRef.current = null;
+    setDrag(null);
   }, [trackPath]);
 
   useEffect(() => {
     if (drag === null) return;
-    const end = () => endDrag();
+    const end = () => commitDrag();
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
     window.addEventListener("mouseup", end);
@@ -41,7 +49,7 @@ export function SeekBar({
       window.removeEventListener("pointercancel", end);
       window.removeEventListener("mouseup", end);
     };
-  }, [drag]);
+  }, [drag]); // eslint-disable-line react-hooks/exhaustive-deps -- commit uses dragRef
 
   return (
     <div className="relative h-5 min-w-0 flex-1">
@@ -66,14 +74,18 @@ export function SeekBar({
         value={shown}
         onChange={(event) => {
           const next = Number(event.target.value);
+          dragRef.current = next;
           if (holding.current) setDrag(next);
-          onSeek(next);
+          else {
+            useAppStore.setState({ positionMs: next });
+            onSeek(next);
+          }
         }}
         onPointerDown={() => {
           holding.current = true;
         }}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        onPointerUp={commitDrag}
+        onPointerCancel={commitDrag}
         className="absolute inset-0 m-0 h-full w-full cursor-pointer opacity-0"
       />
     </div>

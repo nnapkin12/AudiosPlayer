@@ -485,16 +485,6 @@ pub fn is_tone_template(bands: &[EqBand; BAND_COUNT]) -> bool {
     true
 }
 
-/// Collapse a full profile onto the five tone controls.
-/// Hidden bands go to 0 dB. Bass becomes a low shelf and treble a high shelf.
-pub fn apply_tone_controls(bands: &[EqBand; BAND_COUNT]) -> [EqBand; BAND_COUNT] {
-    let mut next = tone_bands();
-    for lock in MACRO_LOCKS {
-        next[lock.index].gain = clamp_gain(bands[lock.index].gain);
-    }
-    next
-}
-
 pub fn composite_peak_db(bands: &[EqBand; BAND_COUNT], sample_rate: f64) -> f32 {
     let nyquist = sample_rate * 0.45;
     if !(sample_rate.is_finite() && nyquist > 20.0) {
@@ -720,7 +710,10 @@ pub fn parse_parametric_eq(text: &str) -> AppResult<ParsedParametric> {
         if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
             continue;
         }
-        if line.len() >= 9 && line[..9].eq_ignore_ascii_case("graphiceq") {
+        if line
+            .get(..9)
+            .is_some_and(|head| head.eq_ignore_ascii_case("graphiceq"))
+        {
             saw_graphic = true;
             continue;
         }
@@ -1184,8 +1177,8 @@ impl EqFilter {
             .all(|channel| channel.len == len);
         if same && len > 0 {
             for channel in &mut self.channels_eq[..slots] {
-                for index in 0..len {
-                    channel.bands[index].retarget(template[index].target);
+                for (band, source) in channel.bands.iter_mut().zip(template.iter()).take(len) {
+                    band.retarget(source.target);
                 }
             }
             return;
@@ -1239,6 +1232,24 @@ impl EqFilter {
 /// Frames averaged into one visualizer sample. Stereo `next` calls are one per channel.
 const VIZ_DECIMATE: u32 = 4;
 
+/// What the player engine wants to know about one source as it plays.
+/// Called on the audio callback thread; keep implementations cheap.
+pub trait SourceHooks: Send {
+    /// About to produce the first sample.
+    fn started(&mut self);
+    /// `frames` frames of this file have been emitted so far.
+    fn progressed(&mut self, frames: u64);
+    /// The inner decoder ran out.
+    fn finished(&mut self);
+    /// A seek landed; `frames` is the new file position.
+    fn seeked(&mut self, frames: u64);
+    /// When true the source yields nothing, so rodio moves past it.
+    fn cancelled(&self) -> bool;
+}
+
+/// How often `progressed` fires, in frames. ~20 ms at 48 kHz.
+const PROGRESS_EVERY_FRAMES: u64 = 1024;
+
 pub struct EqSource<I> {
     inner: I,
     shared: Arc<EqShared>,
@@ -1248,6 +1259,14 @@ pub struct EqSource<I> {
     viz_count: u32,
     viz_span: u32,
     viz_rate: u32,
+    hooks: Option<Box<dyn SourceHooks>>,
+    channels: u64,
+    rate: u64,
+    samples: u64,
+    frames: u64,
+    last_report: u64,
+    started: bool,
+    done: bool,
 }
 
 impl<I> EqSource<I>
@@ -1270,7 +1289,27 @@ where
             viz_count: 0,
             viz_span: channels * VIZ_DECIMATE,
             viz_rate: (rate / VIZ_DECIMATE).max(1),
+            hooks: None,
+            channels: channels as u64,
+            rate: rate as u64,
+            samples: 0,
+            frames: 0,
+            last_report: 0,
+            started: false,
+            done: false,
         }
+    }
+
+    pub fn with_hooks(mut self, hooks: Box<dyn SourceHooks>) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
+    /// Start counting from `pos`, for a decoder that was seeked before wrapping.
+    pub fn starting_at(mut self, pos: Duration) -> Self {
+        self.frames = (pos.as_secs_f64() * self.rate as f64) as u64;
+        self.last_report = self.frames;
+        self
     }
 
     #[inline]
@@ -1307,15 +1346,74 @@ where
 
     #[inline]
     fn next(&mut self) -> Option<f32> {
-        self.sync();
-        let sample = self.filter.process(self.inner.next()?.to_f32());
-        self.tap(sample);
-        Some(sample)
+        if self.done {
+            return None;
+        }
+        // Symphonia can panic mid-file. This runs on the audio callback
+        // thread, where an unwind would take the output stream with it.
+        // Treat a panic as the end of this source.
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.next_inner())) {
+            Ok(sample) => sample,
+            Err(_) => {
+                self.done = true;
+                if let Some(hooks) = self.hooks.as_mut() {
+                    hooks.finished();
+                }
+                None
+            }
+        }
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.inner.size_hint()
+    }
+}
+
+impl<I> EqSource<I>
+where
+    I: Source,
+    I::Item: Sample,
+{
+    #[inline]
+    fn next_inner(&mut self) -> Option<f32> {
+        if let Some(hooks) = self.hooks.as_mut() {
+            if hooks.cancelled() {
+                return None;
+            }
+            if !self.started {
+                self.started = true;
+                hooks.started();
+                hooks.progressed(self.frames);
+            }
+        }
+        self.sync();
+        let Some(raw) = self.inner.next() else {
+            if !self.done {
+                self.done = true;
+                if let Some(hooks) = self.hooks.as_mut() {
+                    hooks.progressed(self.frames);
+                    hooks.finished();
+                }
+            }
+            return None;
+        };
+        let sample = self.filter.process(raw.to_f32());
+        self.tap(sample);
+        if self.hooks.is_some() {
+            self.samples += 1;
+            if self.samples >= self.channels {
+                self.samples = 0;
+                self.frames += 1;
+                if self.frames - self.last_report >= PROGRESS_EVERY_FRAMES {
+                    self.last_report = self.frames;
+                    if let Some(hooks) = self.hooks.as_mut() {
+                        hooks.progressed(self.frames);
+                    }
+                }
+            }
+        }
+        Some(sample)
     }
 }
 
@@ -1347,6 +1445,13 @@ where
     fn try_seek(&mut self, pos: Duration) -> Result<(), rodio::source::SeekError> {
         self.inner.try_seek(pos)?;
         self.filter.reset();
+        self.frames = (pos.as_secs_f64() * self.rate as f64) as u64;
+        self.last_report = self.frames;
+        self.samples = 0;
+        self.done = false;
+        if let Some(hooks) = self.hooks.as_mut() {
+            hooks.seeked(self.frames);
+        }
         Ok(())
     }
 }
@@ -1556,17 +1661,13 @@ mod tests {
     }
 
     #[test]
-    fn tone_controls_drop_hidden_bands_and_lock_shelves() {
-        let mut bands = graphic_bands(&[3.0, 4.0, 1.0, 0.0, 2.0, 0.0, 0.0, -1.0, 5.0, 2.0]);
-        assert!(!is_tone_template(&bands));
-        bands = apply_tone_controls(&bands);
-        assert!(is_tone_template(&bands));
-        assert_eq!(bands[0].kind, FilterKind::LowShelf);
-        assert_eq!(bands[0].gain, 3.0);
-        assert_eq!(bands[9].kind, FilterKind::HighShelf);
-        assert_eq!(bands[9].gain, 2.0);
-        assert_eq!(bands[1].gain, 0.0);
-        assert_eq!(bands[8].gain, 0.0);
+    fn tone_template_is_distinct_from_graphic_bands() {
+        let graphic = graphic_bands(&[3.0, 4.0, 1.0, 0.0, 2.0, 0.0, 0.0, -1.0, 5.0, 2.0]);
+        assert!(!is_tone_template(&graphic));
+        let tone = tone_bands();
+        assert!(is_tone_template(&tone));
+        assert_eq!(tone[0].kind, FilterKind::LowShelf);
+        assert_eq!(tone[9].kind, FilterKind::HighShelf);
     }
 
     #[test]
@@ -1591,6 +1692,9 @@ mod tests {
         assert_eq!(parsed.bands[3].gain, 0.0);
         assert!(parse_parametric_eq("GraphicEQ: 20 -6; 1000 2").is_err());
         assert!(parse_parametric_eq("Filter 1: MAYBE PK Fc no Hz Gain x dB Q y").is_err());
+        // Pasted text with multibyte characters must not panic on a byte slice.
+        assert!(parse_parametric_eq("ÉÉÉÉÉ\nFilter 1: ON PK Fc 1000 Hz Gain 1 dB Q 1").is_ok());
+        assert!(parse_parametric_eq("日本語のテキスト").is_err());
     }
 
     #[test]

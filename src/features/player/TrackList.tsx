@@ -1,9 +1,9 @@
 import { useEffect, useState, type MouseEvent } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { PlayPauseIcon } from "@/features/shell/PlayPauseIcon";
-import { api } from "@/lib/api";
+import { useTransport } from "@/features/shell/useTransport";
 import { CoverThumb } from "@/lib/covers";
-import { displayArtist, displayTitle, errorMessage, formatTime } from "@/lib/format";
+import { displayArtist, displayTitle, formatTime } from "@/lib/format";
 import { VirtualList } from "@/lib/virtualList";
 import type { Track } from "@/lib/types";
 import { useAppStore } from "@/store/useAppStore";
@@ -21,8 +21,7 @@ export function TrackList({
 }) {
   const currentPath = useAppStore((state) => state.snapshot?.current?.path ?? null);
   const playing = useAppStore((state) => state.snapshot?.playing ?? false);
-  const applySnapshot = useAppStore((state) => state.applySnapshot);
-  const setStatus = useAppStore((state) => state.setStatus);
+  const transport = useTransport();
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
 
   useEffect(() => {
@@ -46,11 +45,7 @@ export function TrackList({
 
   async function activate(track: Track, index: number) {
     if (track.path === currentPath) {
-      try {
-        applySnapshot(await api.toggle());
-      } catch (error) {
-        setStatus(errorMessage(error, "Could not control playback"));
-      }
+      transport.toggle();
       return;
     }
     onPlay(track, index);
@@ -79,6 +74,7 @@ export function TrackList({
             <button
               type="button"
               title={showPause ? "Pause" : "Play"}
+              aria-label={showPause ? "Pause" : "Play"}
               onClick={() => void activate(track, index)}
               className="relative shrink-0"
             >

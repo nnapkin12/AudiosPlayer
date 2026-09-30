@@ -34,7 +34,8 @@ export function useSmoothPosition(playing: boolean): number {
       !playing ||
       minimize ||
       duration <= 0 ||
-      (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+      (typeof window !== "undefined" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches)
     ) {
       return;
     }
@@ -48,7 +49,10 @@ export function useSmoothPosition(playing: boolean): number {
   }, [playing, minimize, duration, tick, speed]);
 
   if (!playing || minimize || duration <= 0) return tick;
-  if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  if (
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  ) {
     return tick;
   }
   return shown;

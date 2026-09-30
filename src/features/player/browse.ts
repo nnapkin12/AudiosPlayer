@@ -1,6 +1,13 @@
 import { api, pickAudioFile, pickFolder } from "@/lib/api";
 import { baseName, errorMessage } from "@/lib/format";
-import { cacheKey, dropCachedTracks, getCachedTracks, patchCachedTracks, setCachedTracks } from "@/lib/browseCache";
+import {
+  cacheKey,
+  dropCachedTracks,
+  getCachedTracks,
+  patchCachedTracks,
+  setCachedTracks,
+} from "@/lib/browseCache";
+import { dropDiscoverTracks } from "@/features/player/discoverCache";
 import { dropCover } from "@/lib/covers";
 import type { BrowsePage, MissingItem, Track } from "@/lib/types";
 import { useAppStore } from "@/store/useAppStore";
@@ -32,6 +39,7 @@ export function samePage(left: BrowsePage, right: BrowsePage): boolean {
 export function applyTrackMeta(tracks: Track[]): void {
   if (tracks.length === 0) return;
   patchCachedTracks(tracks);
+  dropDiscoverTracks();
   const byPath = new Map(tracks.map((track) => [track.path, track]));
   const store = useAppStore.getState();
   store.setPageTracks(store.pageTracks.map((track) => byPath.get(track.path) ?? track));
@@ -61,7 +69,12 @@ export async function locateMissing(item: MissingItem, asFolder = false): Promis
   store.setLibraryRoots(roots);
   store.setMissing(missing);
   const browse = store.browse;
-  if (browse.kind === "folder" && item.scope === "library" && browse.path === item.path && item.kind === "dir") {
+  if (
+    browse.kind === "folder" &&
+    item.scope === "library" &&
+    browse.path === item.path &&
+    item.kind === "dir"
+  ) {
     await openBrowsePage({ kind: "folder", path: picked }, true);
     return;
   }
@@ -110,7 +123,8 @@ async function loadBrowse(page: BrowsePage, force: boolean, clearStatus: boolean
     return;
   }
 
-  const key = page.kind === "folder" ? cacheKey("folder", page.path) : cacheKey("playlist", page.id);
+  const key =
+    page.kind === "folder" ? cacheKey("folder", page.path) : cacheKey("playlist", page.id);
   if (force) dropCachedTracks(key);
   const cached = getCachedTracks(key);
   if (cached) {

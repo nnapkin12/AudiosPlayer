@@ -29,5 +29,10 @@ export default defineConfig(() => ({
   },
   test: {
     environment: "node",
+    // The default forks pool cannot spawn in some sandboxed environments.
+    pool: "threads",
+    // Component tests opt in with `// @vitest-environment jsdom`.
+    environmentMatchGlobs: [["src/**/*.dom.test.{ts,tsx}", "jsdom"]],
+    setupFiles: ["./src/test/setup.ts"],
   },
 }));
