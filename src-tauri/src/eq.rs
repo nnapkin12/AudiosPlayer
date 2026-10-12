@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -965,6 +965,10 @@ fn default_true() -> bool {
 pub struct EqShared {
     params: Mutex<EqParams>,
     generation: AtomicU64,
+    /// Linear gain of the source that is producing sound, as `f32` bits.
+    /// The playing source reads this every sample. A gapless append does not,
+    /// until that append produces its first sample.
+    playback_gain: AtomicU32,
     viz: VizTap,
 }
 
@@ -973,6 +977,7 @@ impl Default for EqShared {
         Self {
             params: Mutex::new(EqParams::bypass()),
             generation: AtomicU64::new(1),
+            playback_gain: AtomicU32::new(1.0f32.to_bits()),
             viz: VizTap::new(),
         }
     }
@@ -1013,6 +1018,24 @@ impl EqShared {
 
     pub fn spectrum(&self) -> Option<[u8; crate::viz::BANDS]> {
         self.viz.spectrum()
+    }
+
+    pub fn set_playback_gain(&self, gain: f32) {
+        let gain = if gain.is_finite() && gain >= 0.0 {
+            gain
+        } else {
+            1.0
+        };
+        self.playback_gain.store(gain.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn playback_gain(&self) -> f32 {
+        let gain = f32::from_bits(self.playback_gain.load(Ordering::Relaxed));
+        if gain.is_finite() && gain >= 0.0 {
+            gain
+        } else {
+            1.0
+        }
     }
 }
 
@@ -1092,7 +1115,9 @@ fn flush(value: f64) -> f64 {
     }
 }
 
-const MAX_CHANNELS: usize = 8;
+/// Past this, per-channel biquads are not worth the state. The file plays
+/// with EQ bypassed instead of wrapping onto another channel's memory.
+const MAX_EQ_CHANNELS: usize = 32;
 
 #[derive(Clone, Copy)]
 struct ChannelEq {
@@ -1111,28 +1136,37 @@ impl Default for ChannelEq {
 
 pub struct EqFilter {
     sample_rate: u32,
-    channels: u16,
     channel_idx: u16,
-    channels_eq: [ChannelEq; MAX_CHANNELS],
+    /// One filter per channel, allocated once. Empty when the file is wider
+    /// than [`MAX_EQ_CHANNELS`]; those files stay in bypass.
+    channels_eq: Vec<ChannelEq>,
     preamp_lin: f64,
     bypass: bool,
+    wide: bool,
 }
 
 impl EqFilter {
     pub fn new(sample_rate: u32, channels: u16) -> Self {
+        let channels = channels.max(1);
+        let wide = channels as usize > MAX_EQ_CHANNELS;
+        let slots = if wide { 0 } else { channels as usize };
         let mut filter = Self {
             sample_rate,
-            channels: channels.max(1),
             channel_idx: 0,
-            channels_eq: [ChannelEq::default(); MAX_CHANNELS],
+            channels_eq: vec![ChannelEq::default(); slots],
             preamp_lin: 1.0,
             bypass: true,
+            wide,
         };
         filter.configure(&EqParams::bypass());
         filter
     }
 
     pub fn configure(&mut self, params: &EqParams) {
+        if self.wide {
+            self.bypass = true;
+            return;
+        }
         self.bypass = is_bypass(params);
         let sr = f64::from(self.sample_rate.max(1));
         let preamp = if self.bypass {
@@ -1190,7 +1224,7 @@ impl EqFilter {
     }
 
     fn channel_slots(&self) -> usize {
-        (self.channels.max(1) as usize).min(MAX_CHANNELS)
+        self.channels_eq.len()
     }
 
     pub fn reset(&mut self) {
@@ -1208,24 +1242,33 @@ impl EqFilter {
         samples
             .iter()
             .copied()
-            .map(|sample| self.process(sample))
+            .map(|sample| self.process(sample, 1.0))
             .collect()
     }
 
+    /// Equalize `x`, apply `gain`, then hard-limit to full scale.
+    /// Bypass skips the biquads and still applies gain and the limit.
     #[inline]
-    fn process(&mut self, x: f32) -> f32 {
-        let slots = self.channel_slots();
-        let ch = self.channel_idx as usize % slots;
-        self.channel_idx = (self.channel_idx + 1) % slots as u16;
-        if self.bypass {
-            return x;
-        }
-        let mut y = f64::from(x);
-        let channel = &mut self.channels_eq[ch];
-        for band in &mut channel.bands[..channel.len] {
-            y = band.process(y);
-        }
-        (y * self.preamp_lin) as f32
+    fn process(&mut self, x: f32, gain: f32) -> f32 {
+        let gain = if gain.is_finite() && gain >= 0.0 {
+            gain
+        } else {
+            1.0
+        };
+        let slots = self.channels_eq.len();
+        let filtered = if self.bypass || slots == 0 {
+            x
+        } else {
+            let ch = self.channel_idx as usize % slots;
+            self.channel_idx = (self.channel_idx + 1) % slots as u16;
+            let mut y = f64::from(x);
+            let channel = &mut self.channels_eq[ch];
+            for band in &mut channel.bands[..channel.len] {
+                y = band.process(y);
+            }
+            (y * self.preamp_lin) as f32
+        };
+        (filtered * gain).clamp(-1.0, 1.0)
     }
 }
 
@@ -1260,6 +1303,11 @@ pub struct EqSource<I> {
     viz_span: u32,
     viz_rate: u32,
     hooks: Option<Box<dyn SourceHooks>>,
+    /// Gain chosen when this source was appended. Used until it starts, so a
+    /// gapless hop does not inherit the previous song's ReplayGain.
+    baked_gain: f32,
+    /// When true, read [`EqShared::playback_gain`] instead of `baked_gain`.
+    follow_live: bool,
     channels: u64,
     rate: u64,
     samples: u64,
@@ -1290,6 +1338,8 @@ where
             viz_span: channels * VIZ_DECIMATE,
             viz_rate: (rate / VIZ_DECIMATE).max(1),
             hooks: None,
+            baked_gain: 1.0,
+            follow_live: true,
             channels: channels as u64,
             rate: rate as u64,
             samples: 0,
@@ -1302,6 +1352,19 @@ where
 
     pub fn with_hooks(mut self, hooks: Box<dyn SourceHooks>) -> Self {
         self.hooks = Some(hooks);
+        self
+    }
+
+    /// `follow_live` is for the source that is about to play: it tracks
+    /// ReplayGain changes. A gapless append passes `false` and keeps `baked`
+    /// until its first sample, then publishes that gain for later changes.
+    pub fn with_gain(mut self, baked: f32, follow_live: bool) -> Self {
+        self.baked_gain = if baked.is_finite() && baked >= 0.0 {
+            baked
+        } else {
+            1.0
+        };
+        self.follow_live = follow_live;
         self
     }
 
@@ -1377,12 +1440,18 @@ where
 {
     #[inline]
     fn next_inner(&mut self) -> Option<f32> {
-        if let Some(hooks) = self.hooks.as_mut() {
-            if hooks.cancelled() {
-                return None;
+        if self.hooks.as_ref().is_some_and(|hooks| hooks.cancelled()) {
+            return None;
+        }
+        if !self.started {
+            // Publish before the first sample so a hop is already at this
+            // file's gain, without waiting for the player ticker.
+            if !self.follow_live {
+                self.shared.set_playback_gain(self.baked_gain);
+                self.follow_live = true;
             }
-            if !self.started {
-                self.started = true;
+            self.started = true;
+            if let Some(hooks) = self.hooks.as_mut() {
                 hooks.started();
                 hooks.progressed(self.frames);
             }
@@ -1398,7 +1467,9 @@ where
             }
             return None;
         };
-        let sample = self.filter.process(raw.to_f32());
+        let sample = self
+            .filter
+            .process(raw.to_f32(), self.shared.playback_gain());
         self.tap(sample);
         if self.hooks.is_some() {
             self.samples += 1;
@@ -1553,7 +1624,7 @@ mod tests {
         filter.reset();
         for n in 0..8_192 {
             let x = (2.0 * std::f64::consts::PI * 32.0 * n as f64 / 192_000.0).sin() as f32 * 0.5;
-            let y = filter.process(x);
+            let y = filter.process(x, 1.0);
             assert!(y.is_finite());
             assert!(y.abs() < 2.0, "{y}");
         }
@@ -1743,14 +1814,155 @@ mod tests {
         };
         let mut filter = EqFilter::new(44_100, 1);
         filter.configure(&params);
-        let _ = filter.process(0.9);
-        let _ = filter.process(-0.4);
+        let _ = filter.process(0.9, 1.0);
+        let _ = filter.process(-0.4, 1.0);
         filter.reset();
         let mut fresh = EqFilter::new(44_100, 1);
         fresh.configure(&params);
         fresh.reset();
-        let a = filter.process(0.3);
-        let b = fresh.process(0.3);
+        let a = filter.process(0.3, 1.0);
+        let b = fresh.process(0.3, 1.0);
         assert!((a - b).abs() < 1e-5);
+    }
+
+    #[test]
+    fn boost_cannot_exceed_full_scale() {
+        let mut bands = tone_bands();
+        bands[4].gain = 12.0;
+        let mut filter = EqFilter::new(48_000, 1);
+        filter.configure(&EqParams {
+            enabled: true,
+            bands,
+            preamp: 12.0,
+            auto_preamp: false,
+        });
+        filter.reset();
+        for _ in 0..512 {
+            let y = filter.process(1.0, 2.0);
+            assert!(y.is_finite());
+            assert!(y.abs() <= 1.0, "{y}");
+        }
+        let quiet = filter.process(0.0, 2.0);
+        assert!(quiet.abs() <= 1.0);
+    }
+
+    #[test]
+    fn wide_layout_bypasses_instead_of_aliasing() {
+        let mut bands = tone_bands();
+        bands[0].gain = 12.0;
+        let params = EqParams {
+            enabled: true,
+            bands,
+            preamp: 12.0,
+            auto_preamp: false,
+        };
+        let mut filter = EqFilter::new(48_000, 40);
+        filter.configure(&params);
+        assert_eq!(filter.process(0.25, 1.0), 0.25);
+    }
+
+    #[test]
+    fn ten_channels_do_not_share_biquad_state() {
+        let mut bands = tone_bands();
+        bands[0] = EqBand {
+            kind: FilterKind::LowShelf,
+            freq: 200.0,
+            q: 0.71,
+            gain: 12.0,
+        };
+        let mut filter = EqFilter::new(44_100, 10);
+        filter.configure(&EqParams {
+            enabled: true,
+            bands,
+            preamp: 0.0,
+            auto_preamp: false,
+        });
+        let ramp = 44_100 / 200;
+        for _ in 0..ramp {
+            for _channel in 0..10 {
+                let _ = filter.process(0.0, 1.0);
+            }
+        }
+        let mut frame = [0.0f32; 10];
+        frame[0] = 1.0;
+        let first = filter.process_buffer(&frame);
+        assert!(
+            first[8].abs() < 1e-4,
+            "channel 8 reused channel 0 state: {}",
+            first[8]
+        );
+        let second = filter.process_buffer(&[0.0; 10]);
+        assert!(
+            second[0].abs() > 1e-3,
+            "channel 0 should still be ringing: {}",
+            second[0]
+        );
+        assert!(
+            second[8].abs() < 1e-4,
+            "channel 8 rang with channel 0: {}",
+            second[8]
+        );
+    }
+
+    struct Pcm {
+        data: Vec<f32>,
+        pos: usize,
+        channels: u16,
+    }
+
+    impl Iterator for Pcm {
+        type Item = f32;
+        fn next(&mut self) -> Option<f32> {
+            let sample = self.data.get(self.pos).copied()?;
+            self.pos += 1;
+            Some(sample)
+        }
+    }
+
+    impl Source for Pcm {
+        fn current_frame_len(&self) -> Option<usize> {
+            None
+        }
+        fn channels(&self) -> u16 {
+            self.channels
+        }
+        fn sample_rate(&self) -> u32 {
+            44_100
+        }
+        fn total_duration(&self) -> Option<Duration> {
+            None
+        }
+    }
+
+    #[test]
+    fn gapless_source_publishes_its_own_gain_on_the_first_sample() {
+        let shared = Arc::new(EqShared::default());
+        shared.set_playback_gain(0.5);
+        let mut playing = EqSource::new(
+            Pcm {
+                data: vec![1.0, 1.0],
+                pos: 0,
+                channels: 1,
+            },
+            Arc::clone(&shared),
+        )
+        .with_gain(0.5, true);
+        assert!((playing.next().unwrap() - 0.5).abs() < 1e-5);
+        shared.set_playback_gain(0.8);
+        assert!((playing.next().unwrap() - 0.8).abs() < 1e-5);
+
+        let mut queued = EqSource::new(
+            Pcm {
+                data: vec![1.0],
+                pos: 0,
+                channels: 1,
+            },
+            Arc::clone(&shared),
+        )
+        .with_gain(0.25, false);
+        assert!((shared.playback_gain() - 0.8).abs() < 1e-5);
+        let sample = queued.next().unwrap();
+        assert!((sample - 0.25).abs() < 1e-5);
+        assert!((shared.playback_gain() - 0.25).abs() < 1e-5);
     }
 }

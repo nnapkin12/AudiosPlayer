@@ -1584,6 +1584,8 @@ mod tests {
             folder: "/music".into(),
             replaygain_track: None,
             replaygain_album: None,
+            replaygain_track_peak: None,
+            replaygain_album_peak: None,
         })];
         let catalog = Catalog {
             ready: AtomicBool::new(true),

@@ -510,6 +510,7 @@ impl Player {
         }
         self.logic().queue.enqueue(track_from_path(Path::new(path)));
         self.invalidate_gapless();
+        self.apply_volume();
         self.finish()
     }
 
@@ -546,6 +547,7 @@ impl Player {
         self.logic().queue.set_shuffle(shuffle);
         self.persist.update(|data| data.shuffle = shuffle);
         self.invalidate_gapless();
+        self.apply_volume();
         self.finish()
     }
 
@@ -779,6 +781,7 @@ impl Player {
         let result = (|| {
             // The queue keeps the library path. The engine gets a file it can open.
             let playable = self.engine.prepare(Path::new(path))?;
+            self.engine.arm_source_gain(self.gain_for_path(path));
             self.engine.set_uri(&playable)?;
             Ok(())
         })();
@@ -806,16 +809,31 @@ impl Player {
         Ok(())
     }
 
-    fn apply_volume(&self) {
+    /// Linear ReplayGain for `path` if it is the current song, else unity.
+    /// Sink volume stays the user's level; this gain belongs to one source.
+    fn gain_for_path(&self, path: &str) -> f64 {
         let logic = self.logic();
-        let mut volume = if logic.muted { 0.0 } else { logic.volume };
-        if logic.replaygain {
-            if let Some(track) = logic.queue.current() {
-                volume *= replaygain_multiplier(track);
-            }
-        }
-        drop(logic);
+        logic
+            .queue
+            .current()
+            .filter(|track| track.path == path)
+            .map(|track| source_gain(&logic, track))
+            .unwrap_or(1.0)
+    }
+
+    fn apply_volume(&self) {
+        let (volume, gain) = {
+            let logic = self.logic();
+            let volume = if logic.muted { 0.0 } else { logic.volume };
+            let gain = logic
+                .queue
+                .current()
+                .map(|track| source_gain(&logic, track))
+                .unwrap_or(1.0);
+            (volume, gain)
+        };
         let _ = self.engine.set_volume(volume);
+        let _ = self.engine.set_playback_gain(gain);
     }
 
     fn current_duration(&self, logic: &Logic) -> u64 {
@@ -883,6 +901,16 @@ impl Player {
         if !still_wanted {
             return;
         }
+        let gain = {
+            let logic = self.logic();
+            logic
+                .queue
+                .peek_next()
+                .filter(|track| track.path == next)
+                .map(|track| source_gain(&logic, track))
+                .unwrap_or(1.0)
+        };
+        self.engine.arm_source_gain(gain);
         let appended = prepared.and_then(|playable| self.engine.set_gapless_next(Some(&playable)));
         if appended.is_err() {
             self.logic().clear_pending();
@@ -909,6 +937,7 @@ impl Player {
         if !pending {
             return;
         }
+        convert::cancel_playback_prepare();
         let _ = self.engine.cancel_gapless_next();
         self.logic().clear_pending();
     }
@@ -1026,6 +1055,60 @@ impl Player {
     }
 }
 
+fn source_gain(logic: &Logic, track: &Track) -> f64 {
+    if !logic.replaygain {
+        return 1.0;
+    }
+    if use_album_gain(&logic.queue, track) {
+        scan::replaygain_album_multiplier(track)
+    } else {
+        replaygain_multiplier(track)
+    }
+}
+
+/// Album gain when this song sits in a contiguous run of the same album.
+/// Shuffle, a missing album gain, and a neighbor from another album stay on
+/// track gain.
+fn use_album_gain(queue: &Queue, track: &Track) -> bool {
+    if queue.shuffle || track.replaygain_album.is_none() {
+        return false;
+    }
+    let album = track.album.trim();
+    if album.is_empty() {
+        return false;
+    }
+    let Some((previous, next)) = queue.context_neighbors(&track.path) else {
+        return false;
+    };
+    let same = |other: &Track| other.album == track.album;
+    if previous.is_some_and(|other| !same(other)) || next.is_some_and(|other| !same(other)) {
+        return false;
+    }
+    if queue
+        .current()
+        .is_some_and(|current| current.path == track.path)
+    {
+        if queue
+            .peek_next()
+            .is_some_and(|upcoming| upcoming.album != track.album)
+        {
+            return false;
+        }
+    }
+    if queue
+        .peek_next()
+        .is_some_and(|upcoming| upcoming.path == track.path)
+    {
+        if queue
+            .current()
+            .is_some_and(|current| current.album != track.album)
+        {
+            return false;
+        }
+    }
+    true
+}
+
 impl Logic {
     fn clear_pending(&mut self) {
         self.pending_gapless = false;
@@ -1081,6 +1164,8 @@ mod tests {
             folder: "/music".into(),
             replaygain_track: None,
             replaygain_album: None,
+            replaygain_track_peak: None,
+            replaygain_album_peak: None,
         }
     }
 
@@ -1207,6 +1292,72 @@ mod tests {
             .engine
             .calls()
             .contains(&Call::SetUri("/music/b.mp3".into())));
+    }
+
+    #[test]
+    fn gapless_hop_uses_the_next_tracks_gain_before_the_tick() {
+        let rig = rig();
+        rig.player.set_gapless(true).unwrap();
+        let mut first = track("a");
+        first.replaygain_track = Some(-6.0);
+        let mut second = track("b");
+        second.replaygain_track = Some(0.0);
+        rig.player
+            .play_tracks(vec![first.clone(), second.clone()], None)
+            .unwrap();
+        let gain_a = replaygain_multiplier(&first);
+        let gain_b = replaygain_multiplier(&second);
+        assert!((gain_a - gain_b).abs() > 0.2);
+        assert!((rig.engine.playback_gain() - gain_a).abs() < 1e-6);
+        rig.engine.advance(8_500);
+        rig.player.tick();
+        assert!((rig.engine.playback_gain() - gain_a).abs() < 1e-6);
+        rig.engine.advance(2_000);
+        assert!(
+            (rig.engine.playback_gain() - gain_b).abs() < 1e-6,
+            "hop kept the previous gain {}",
+            rig.engine.playback_gain()
+        );
+    }
+
+    #[test]
+    fn contiguous_album_uses_album_gain_and_shuffle_does_not() {
+        let rig = rig();
+        let mut first = track("a");
+        first.replaygain_track = Some(-6.0);
+        first.replaygain_album = Some(0.0);
+        let mut second = track("b");
+        second.replaygain_track = Some(-6.0);
+        second.replaygain_album = Some(0.0);
+        rig.player.play_tracks(vec![first, second], None).unwrap();
+        assert!(
+            (rig.engine.playback_gain() - 1.0).abs() < 1e-6,
+            "album gain {}",
+            rig.engine.playback_gain()
+        );
+        rig.player.set_shuffle(true).unwrap();
+        let track_gain = 10f64.powf(-6.0 / 20.0);
+        assert!(
+            (rig.engine.playback_gain() - track_gain).abs() < 1e-6,
+            "shuffle kept album gain {}",
+            rig.engine.playback_gain()
+        );
+    }
+
+    #[test]
+    fn a_different_neighbor_album_uses_track_gain() {
+        let rig = rig();
+        let mut first = track("a");
+        first.album = "One".into();
+        first.replaygain_track = Some(-6.0);
+        first.replaygain_album = Some(0.0);
+        let mut second = track("b");
+        second.album = "Two".into();
+        second.replaygain_track = Some(-6.0);
+        second.replaygain_album = Some(0.0);
+        rig.player.play_tracks(vec![first, second], None).unwrap();
+        let track_gain = 10f64.powf(-6.0 / 20.0);
+        assert!((rig.engine.playback_gain() - track_gain).abs() < 1e-6);
     }
 
     #[test]

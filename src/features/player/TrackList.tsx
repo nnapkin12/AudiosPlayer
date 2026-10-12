@@ -69,7 +69,7 @@ export function TrackList({
             onContextMenu={(event) => onContext(event, track, index)}
             className={`flex h-full w-full items-center gap-3 px-5 ${
               active ? "bg-app-hover" : hovered ? "bg-app-hover/40" : ""
-            }`}
+            } group`}
           >
             <button
               type="button"
@@ -80,14 +80,18 @@ export function TrackList({
             >
               <CoverThumb path={track.path} className="h-11 w-11 rounded-md" />
               <span
-                className={`absolute inset-0 flex items-center justify-center rounded-md bg-black/50 text-white transition-opacity ${
+                className={`absolute inset-0 flex items-center justify-center rounded-md bg-black/50 text-white transition-opacity group-focus-within:opacity-100 ${
                   hovered ? "opacity-100" : "opacity-0"
                 }`}
               >
                 <PlayPauseIcon playing={showPause} size={16} />
               </span>
             </button>
-            <span className="w-7 shrink-0 text-right text-[13px] font-semibold tabular-nums text-app-muted">
+            <span
+              className={`w-7 shrink-0 text-right text-[13px] font-semibold tabular-nums ${
+                active ? "text-app-accent" : "text-app-muted"
+              }`}
+            >
               {track.track ?? index + 1}
             </span>
             <button
@@ -95,7 +99,11 @@ export function TrackList({
               onClick={() => void activate(track, index)}
               className="min-w-0 flex-1 text-left"
             >
-              <span className="block truncate text-[15px] font-semibold text-app-text">
+              <span
+                className={`block truncate text-[15px] font-semibold ${
+                  active ? "text-app-accent" : "text-app-text"
+                }`}
+              >
                 {displayTitle(track.title, track.path)}
               </span>
               <span className="block truncate text-[13px] font-medium text-app-muted">

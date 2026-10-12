@@ -3,7 +3,7 @@ use std::io::BufReader;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Sender, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,12 +15,24 @@ use crate::error::{AppError, AppResult};
 /// How long a caller waits for the audio thread before giving up. Rodio can
 /// block forever when the output device disappears; the UI must not.
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+/// Commands waiting on a stuck audio thread. Past this, callers fail
+/// instead of leaving another command queued.
+const COMMAND_QUEUE: usize = 8;
 /// Playing, not paused, sources queued, and yet the position has not moved
 /// for this long: the stream is dead. Rebuild it.
 const STALL_LIMIT: Duration = Duration::from_secs(3);
 /// With no output device, try to open one this often.
 const REOPEN_EVERY: Duration = Duration::from_secs(5);
 const NO_DEVICE: &str = "no audio output device";
+
+fn finite_gain(gain: f64) -> f32 {
+    let gain = gain as f32;
+    if gain.is_finite() && gain >= 0.0 {
+        gain
+    } else {
+        1.0
+    }
+}
 
 pub trait PlayerEngine: Send + Sync {
     /// Turn a library path into one this engine can open. The rodio engine
@@ -34,6 +46,13 @@ pub trait PlayerEngine: Send + Sync {
     fn position_ms(&self) -> u64;
     fn duration_ms(&self) -> u64;
     fn set_volume(&self, volume: f64) -> AppResult<()>;
+    /// Gain for the next `set_uri` or `set_gapless_next`. Does not change
+    /// the source that is already playing.
+    fn arm_source_gain(&self, gain: f64);
+    /// Gain of the source that is producing sound. A gapless append updates
+    /// this when it starts, before the player ticker notices the hop.
+    fn set_playback_gain(&self, gain: f64) -> AppResult<()>;
+    fn playback_gain(&self) -> f64;
     fn set_speed(&self, speed: f64) -> AppResult<()>;
     fn speed(&self) -> f64;
     fn set_eq(&self, params: EqParams) -> AppResult<()>;
@@ -74,17 +93,19 @@ struct Shared {
     empty: AtomicBool,
     playing: AtomicBool,
     sample_rate: AtomicU32,
+    /// Linear gain consumed by the next load on the audio thread. `f32` bits.
+    armed_gain: AtomicU32,
 }
 
 pub struct RodioEngine {
-    tx: Sender<Command>,
+    tx: SyncSender<Command>,
     shared: Arc<Shared>,
     eq: Arc<EqShared>,
 }
 
 impl RodioEngine {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<Command>();
+        let (tx, rx) = mpsc::sync_channel::<Command>(COMMAND_QUEUE);
         let shared = Arc::new(Shared {
             position_ms: AtomicU64::new(0),
             started_sources: AtomicU64::new(0),
@@ -93,6 +114,7 @@ impl RodioEngine {
             empty: AtomicBool::new(true),
             playing: AtomicBool::new(false),
             sample_rate: AtomicU32::new(48_000),
+            armed_gain: AtomicU32::new(1.0f32.to_bits()),
         });
         let eq = Arc::new(EqShared::default());
         let thread_shared = Arc::clone(&shared);
@@ -106,9 +128,17 @@ impl RodioEngine {
 
     fn send(&self, build: impl FnOnce(Sender<AppResult<()>>) -> Command) -> AppResult<()> {
         let (tx, rx) = mpsc::channel();
-        self.tx
-            .send(build(tx))
-            .map_err(|_| AppError::msg("audio thread stopped"))?;
+        match self.tx.try_send(build(tx)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                return Err(AppError::msg(
+                    "audio output stopped responding; check the sound device",
+                ));
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                return Err(AppError::msg("audio thread stopped"));
+            }
+        }
         match rx.recv_timeout(SEND_TIMEOUT) {
             Ok(result) => result,
             Err(mpsc::RecvTimeoutError::Timeout) => Err(AppError::msg(
@@ -181,6 +211,21 @@ impl PlayerEngine for RodioEngine {
 
     fn set_volume(&self, volume: f64) -> AppResult<()> {
         self.send(|reply| Command::SetVolume(volume, reply))
+    }
+
+    fn arm_source_gain(&self, gain: f64) {
+        self.shared
+            .armed_gain
+            .store(finite_gain(gain).to_bits(), Ordering::Relaxed);
+    }
+
+    fn set_playback_gain(&self, gain: f64) -> AppResult<()> {
+        self.eq.set_playback_gain(finite_gain(gain));
+        Ok(())
+    }
+
+    fn playback_gain(&self) -> f64 {
+        f64::from(self.eq.playback_gain())
     }
 
     fn set_speed(&self, speed: f64) -> AppResult<()> {
@@ -576,8 +621,17 @@ fn load_into(
         duration_ms: duration,
         sample_rate,
     };
-    // Decode → EQ Source (float biquads) → sink. Volume / ReplayGain stay on the sink.
-    let mut source = EqSource::new(decoder, Arc::clone(eq)).with_hooks(Box::new(hooks));
+    let baked = finite_gain(f64::from(f32::from_bits(
+        shared.armed_gain.load(Ordering::Relaxed),
+    )));
+    // The playing source tracks live ReplayGain. An append keeps the gain it
+    // was armed with until it actually starts.
+    if replace {
+        eq.set_playback_gain(baked);
+    }
+    let mut source = EqSource::new(decoder, Arc::clone(eq))
+        .with_hooks(Box::new(hooks))
+        .with_gain(baked, replace);
     if let Some(start) = start_at {
         source = source.starting_at(start);
     }

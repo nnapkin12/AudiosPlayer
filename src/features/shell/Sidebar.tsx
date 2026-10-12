@@ -46,7 +46,7 @@ function NavButton({
       onClick={onClick}
       className={`flex h-11 w-11 items-center justify-center rounded-lg transition-colors ${
         active
-          ? "bg-app-hover text-app-text"
+          ? "bg-app-hover text-app-accent"
           : "text-app-muted hover:bg-app-hover hover:text-app-subtle"
       }`}
     >

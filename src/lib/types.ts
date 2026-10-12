@@ -72,6 +72,8 @@ export interface Track {
   folder: string;
   replaygainTrack: number | null;
   replaygainAlbum: number | null;
+  replaygainTrackPeak?: number | null;
+  replaygainAlbumPeak?: number | null;
 }
 
 export interface FolderNode {

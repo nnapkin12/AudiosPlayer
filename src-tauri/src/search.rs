@@ -371,6 +371,8 @@ pub fn track_for(path: &Path, title: &str) -> Track {
             .unwrap_or_default(),
         replaygain_track: None,
         replaygain_album: None,
+        replaygain_track_peak: None,
+        replaygain_album_peak: None,
     }
 }
 
@@ -1176,6 +1178,12 @@ pub(crate) const TOOL_TRANSCODE_TIMEOUT: Duration = Duration::from_secs(600);
 pub(crate) trait OutputWithin {
     /// Like `Command::output`, but kills the child after `timeout`.
     fn output_within(&mut self, timeout: Duration) -> std::io::Result<Output>;
+    /// Same, and also kills the child when `cancel` becomes true.
+    fn output_until(
+        &mut self,
+        timeout: Duration,
+        cancel: impl Fn() -> bool,
+    ) -> std::io::Result<Output>;
 }
 
 fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
@@ -1190,6 +1198,14 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<V
 
 impl OutputWithin for Command {
     fn output_within(&mut self, timeout: Duration) -> std::io::Result<Output> {
+        self.output_until(timeout, || false)
+    }
+
+    fn output_until(
+        &mut self,
+        timeout: Duration,
+        cancel: impl Fn() -> bool,
+    ) -> std::io::Result<Output> {
         self.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1201,12 +1217,17 @@ impl OutputWithin for Command {
             if let Some(status) = child.try_wait()? {
                 break status;
             }
-            if search_cancelled() {
+            if search_cancelled() || cancel() {
+                let replaced_search = search_cancelled();
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
-                    "search play was replaced",
+                    if replaced_search {
+                        "search play was replaced"
+                    } else {
+                        "playback prepare was replaced"
+                    },
                 ));
             }
             if started.elapsed() > timeout {

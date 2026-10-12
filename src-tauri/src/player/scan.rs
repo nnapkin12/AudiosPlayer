@@ -25,6 +25,11 @@ pub struct Track {
     pub folder: String,
     pub replaygain_track: Option<f64>,
     pub replaygain_album: Option<f64>,
+    /// Sample peak, linear. Missing on older saved queues.
+    #[serde(default)]
+    pub replaygain_track_peak: Option<f64>,
+    #[serde(default)]
+    pub replaygain_album_peak: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +179,8 @@ pub fn track_stub(path: &Path) -> Track {
         folder,
         replaygain_track: None,
         replaygain_album: None,
+        replaygain_track_peak: None,
+        replaygain_album_peak: None,
     }
 }
 
@@ -206,6 +213,12 @@ pub fn track_from_path(path: &Path) -> Track {
             track.replaygain_album = tag
                 .get_string(&ItemKey::ReplayGainAlbumGain)
                 .and_then(parse_replaygain_db);
+            track.replaygain_track_peak = tag
+                .get_string(&ItemKey::ReplayGainTrackPeak)
+                .and_then(parse_replaygain_peak);
+            track.replaygain_album_peak = tag
+                .get_string(&ItemKey::ReplayGainAlbumPeak)
+                .and_then(parse_replaygain_peak);
         }
     }
 
@@ -302,12 +315,41 @@ pub fn parse_replaygain_db(value: &str) -> Option<f64> {
     cleaned.trim().parse::<f64>().ok()
 }
 
+pub fn parse_replaygain_peak(value: &str) -> Option<f64> {
+    let peak = value.trim().parse::<f64>().ok()?;
+    if peak.is_finite() && peak > 0.0 {
+        Some(peak)
+    } else {
+        None
+    }
+}
+
+fn leveled_gain(db: Option<f64>, peak: Option<f64>) -> f64 {
+    let mut gain = db.map(|db| 10f64.powf(db / 20.0)).unwrap_or(1.0);
+    if let Some(peak) = peak.filter(|peak| peak.is_finite() && *peak > 0.0) {
+        if gain * peak > 1.0 {
+            gain = 1.0 / peak;
+        }
+    }
+    if !gain.is_finite() {
+        return 1.0;
+    }
+    gain.clamp(0.05, 3.0)
+}
+
 pub fn replaygain_multiplier(track: &Track) -> f64 {
-    track
-        .replaygain_track
-        .or(track.replaygain_album)
-        .map(|db| 10f64.powf(db / 20.0).clamp(0.05, 3.0))
-        .unwrap_or(1.0)
+    leveled_gain(
+        track.replaygain_track.or(track.replaygain_album),
+        track.replaygain_track_peak.or(track.replaygain_album_peak),
+    )
+}
+
+/// Album gain when the queue is one album; falls back to track gain.
+pub fn replaygain_album_multiplier(track: &Track) -> f64 {
+    leveled_gain(
+        track.replaygain_album.or(track.replaygain_track),
+        track.replaygain_album_peak.or(track.replaygain_track_peak),
+    )
 }
 
 #[cfg(test)]
@@ -329,6 +371,29 @@ mod tests {
     }
 
     #[test]
+    fn replaygain_peak_pulls_a_hot_boost_back_to_full_scale() {
+        let mut track = track_stub(Path::new("/a.flac"));
+        track.replaygain_track = Some(6.0);
+        track.replaygain_track_peak = Some(0.9);
+        let unlimited = 10f64.powf(6.0 / 20.0);
+        assert!(unlimited * 0.9 > 1.0);
+        let gain = replaygain_multiplier(&track);
+        assert!((gain - (1.0 / 0.9)).abs() < 1e-9);
+        assert!(gain * 0.9 <= 1.0 + 1e-9);
+    }
+
+    #[test]
+    fn album_multiplier_prefers_album_gain() {
+        let mut track = track_stub(Path::new("/a.flac"));
+        track.replaygain_track = Some(-6.0);
+        track.replaygain_album = Some(0.0);
+        let track_gain = replaygain_multiplier(&track);
+        let album_gain = replaygain_album_multiplier(&track);
+        assert!((album_gain - 1.0).abs() < 1e-9);
+        assert!(track_gain < 0.6);
+    }
+
+    #[test]
     fn sort_uses_disc_then_track() {
         let mut tracks = vec![
             Track {
@@ -343,6 +408,8 @@ mod tests {
                 folder: "/a".into(),
                 replaygain_track: None,
                 replaygain_album: None,
+                replaygain_track_peak: None,
+                replaygain_album_peak: None,
             },
             Track {
                 path: "/a/01.mp3".into(),
@@ -356,6 +423,8 @@ mod tests {
                 folder: "/a".into(),
                 replaygain_track: None,
                 replaygain_album: None,
+                replaygain_track_peak: None,
+                replaygain_album_peak: None,
             },
         ];
         sort_tracks(&mut tracks);

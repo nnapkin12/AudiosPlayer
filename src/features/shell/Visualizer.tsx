@@ -12,6 +12,7 @@ export function Visualizer({ variant }: { variant: "bar" | "stage" }) {
   const main = useAppStore((state) => state.vizMain);
   const border = useAppStore((state) => state.vizBorder);
   const glow = useAppStore((state) => state.vizGlow);
+  const kickRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -82,6 +83,13 @@ export function Visualizer({ variant }: { variant: "bar" | "stage" }) {
       context.stroke();
     };
 
+    const atRest = () => {
+      for (let index = 0; index < BARS; index += 1) {
+        if (shown[index] > 0.01) return false;
+      }
+      return true;
+    };
+
     const loop = (time: number) => {
       if (stopped) return;
       const dt = lastTime === 0 ? 0.016 : Math.min(0.05, (time - lastTime) / 1000);
@@ -89,9 +97,22 @@ export function Visualizer({ variant }: { variant: "bar" | "stage" }) {
       if (!document.hidden) {
         follow(dt);
         paint();
+        if (!playingRef.current && atRest()) {
+          for (let index = 0; index < BARS; index += 1) shown[index] = 0;
+          paint();
+          frame = 0;
+          return;
+        }
       }
       frame = requestAnimationFrame(loop);
     };
+
+    const kick = () => {
+      if (stopped || frame !== 0 || document.hidden) return;
+      lastTime = 0;
+      frame = requestAnimationFrame(loop);
+    };
+    kickRef.current = kick;
 
     if (document.visibilityState !== "hidden") {
       frame = requestAnimationFrame(loop);
@@ -114,12 +135,17 @@ export function Visualizer({ variant }: { variant: "bar" | "stage" }) {
 
     return () => {
       stopped = true;
+      kickRef.current = () => {};
       cancelAnimationFrame(frame);
       unlisten();
       document.removeEventListener("visibilitychange", onVisibility);
       resize?.disconnect();
     };
   }, [border, glow, main]);
+
+  useEffect(() => {
+    if (playing) kickRef.current();
+  }, [playing]);
 
   return (
     <div className={variant === "bar" ? "viz-bar" : "viz-stage"} aria-hidden>

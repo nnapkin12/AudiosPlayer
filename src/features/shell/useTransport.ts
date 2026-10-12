@@ -10,6 +10,18 @@ export function nextRepeat(mode: RepeatMode): RepeatMode {
   return "off";
 }
 
+export function repeatLabel(mode: RepeatMode): string {
+  if (mode === "all") return "Repeat all";
+  if (mode === "one") return "Repeat one";
+  return "Repeat off";
+}
+
+function setPlaying(playing: boolean) {
+  const snapshot = useAppStore.getState().snapshot;
+  if (!snapshot || snapshot.playing === playing) return;
+  useAppStore.setState({ snapshot: { ...snapshot, playing } });
+}
+
 /**
  * One in-flight play/skip at a time. Errors go to the status line.
  * Commands already emit `player://state`, so callers must not applySnapshot.
@@ -32,7 +44,17 @@ export function useTransport() {
   }
 
   return {
-    toggle: () => void run(() => api.toggle()),
+    toggle: () =>
+      void run(async () => {
+        const before = useAppStore.getState().snapshot?.playing ?? false;
+        setPlaying(!before);
+        try {
+          await api.toggle();
+        } catch (error) {
+          setPlaying(before);
+          throw error;
+        }
+      }),
     next: () => void run(() => api.next()),
     previous: () => void run(() => api.previous()),
     seek: (ms: number) => void run(() => api.seek(ms), false),

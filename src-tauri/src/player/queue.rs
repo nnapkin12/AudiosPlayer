@@ -135,6 +135,15 @@ impl Queue {
         None
     }
 
+    /// Previous and next context songs around `path`. `None` when `path` is
+    /// not in the context (a user-queue song, for example).
+    pub fn context_neighbors(&self, path: &str) -> Option<(Option<&Track>, Option<&Track>)> {
+        let index = self.tracks.iter().position(|track| track.path == path)?;
+        let previous = index.checked_sub(1).and_then(|at| self.tracks.get(at));
+        let next = self.tracks.get(index + 1);
+        Some((previous, next))
+    }
+
     /// What plays next: the current song on repeat one, otherwise the first
     /// user-queue song, otherwise the next context song.
     pub fn peek_next(&self) -> Option<&Track> {
@@ -253,6 +262,8 @@ mod tests {
                 folder: "/".into(),
                 replaygain_track: None,
                 replaygain_album: None,
+                replaygain_track_peak: None,
+                replaygain_album_peak: None,
             })
             .collect()
     }

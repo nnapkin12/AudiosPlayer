@@ -38,6 +38,11 @@ struct State {
     started: u64,
     speed: f64,
     volume: f64,
+    /// Gain baked into each queued source, parallel to `sources`.
+    gains: Vec<f64>,
+    /// Gain of the source that has started. Switches on a hop, not on a tick.
+    live_gain: f64,
+    armed_gain: f64,
     durations: HashMap<PathBuf, u64>,
     /// Paths `prepare`/`set_uri` reject, to model an unreadable file.
     broken: Vec<PathBuf>,
@@ -52,7 +57,12 @@ pub struct FakeEngine {
 impl FakeEngine {
     pub fn new() -> Self {
         let engine = Self::default();
-        engine.state.lock().unwrap().speed = 1.0;
+        {
+            let mut state = engine.state.lock().unwrap();
+            state.speed = 1.0;
+            state.live_gain = 1.0;
+            state.armed_gain = 1.0;
+        }
         engine
     }
 
@@ -91,9 +101,13 @@ impl FakeEngine {
             } else {
                 ms -= remaining;
                 state.sources.remove(0);
+                if !state.gains.is_empty() {
+                    state.gains.remove(0);
+                }
                 state.position_ms = 0;
                 if !state.sources.is_empty() {
                     state.started += 1;
+                    state.live_gain = state.gains.first().copied().unwrap_or(state.live_gain);
                 }
             }
         }
@@ -135,7 +149,10 @@ impl PlayerEngine for FakeEngine {
     fn set_uri(&self, path: &Path) -> AppResult<()> {
         self.record(Call::SetUri(path.to_path_buf()));
         let mut state = self.state.lock().unwrap();
+        let gain = state.armed_gain;
         state.sources = vec![path.to_path_buf()];
+        state.gains = vec![gain];
+        state.live_gain = gain;
         state.position_ms = 0;
         state.playing = false;
         state.started = 0;
@@ -162,6 +179,7 @@ impl PlayerEngine for FakeEngine {
         self.record(Call::Stop);
         let mut state = self.state.lock().unwrap();
         state.sources.clear();
+        state.gains.clear();
         state.position_ms = 0;
         state.playing = false;
         Ok(())
@@ -195,6 +213,23 @@ impl PlayerEngine for FakeEngine {
         Ok(())
     }
 
+    fn arm_source_gain(&self, gain: f64) {
+        self.state.lock().unwrap().armed_gain = gain;
+    }
+
+    fn set_playback_gain(&self, gain: f64) -> AppResult<()> {
+        let mut state = self.state.lock().unwrap();
+        state.live_gain = gain;
+        if let Some(current) = state.gains.first_mut() {
+            *current = gain;
+        }
+        Ok(())
+    }
+
+    fn playback_gain(&self) -> f64 {
+        self.state.lock().unwrap().live_gain
+    }
+
     fn set_speed(&self, speed: f64) -> AppResult<()> {
         self.state.lock().unwrap().speed = speed;
         Ok(())
@@ -214,14 +249,19 @@ impl PlayerEngine for FakeEngine {
         };
         self.record(Call::Append(path.to_path_buf()));
         let mut state = self.state.lock().unwrap();
+        let gain = state.armed_gain;
         state.sources.truncate(1);
+        state.gains.truncate(1);
         state.sources.push(path.to_path_buf());
+        state.gains.push(gain);
         Ok(())
     }
 
     fn cancel_gapless_next(&self) -> AppResult<()> {
         self.record(Call::CancelAppend);
-        self.state.lock().unwrap().sources.truncate(1);
+        let mut state = self.state.lock().unwrap();
+        state.sources.truncate(1);
+        state.gains.truncate(1);
         Ok(())
     }
 

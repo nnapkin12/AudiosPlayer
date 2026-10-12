@@ -3,7 +3,7 @@ import { ChevronDown, Repeat, Repeat1, Shuffle, SkipBack, SkipForward } from "lu
 import { PlayPauseIcon } from "@/features/shell/PlayPauseIcon";
 import { TransportSeek } from "@/features/shell/SeekBar";
 import { SpeedControl } from "@/features/shell/SpeedControl";
-import { nextRepeat, useTransport } from "@/features/shell/useTransport";
+import { nextRepeat, repeatLabel, useTransport } from "@/features/shell/useTransport";
 import { Visualizer } from "@/features/shell/Visualizer";
 import { paletteFromPixels, type ArtColors } from "@/lib/artworkColor";
 import { displayArtist, displayTitle } from "@/lib/format";
@@ -87,6 +87,7 @@ export function NowPlayingFull() {
                 type="button"
                 title="Shuffle"
                 aria-label="Shuffle"
+                aria-pressed={shuffle}
                 onClick={() => transport.setShuffle(!shuffle)}
                 className={`t-btn ${shuffle ? "text-app-accent" : "text-app-muted hover:text-app-text"}`}
               >
@@ -121,8 +122,9 @@ export function NowPlayingFull() {
               </button>
               <button
                 type="button"
-                title="Repeat"
-                aria-label="Repeat"
+                title={repeatLabel(repeat)}
+                aria-label={repeatLabel(repeat)}
+                aria-pressed={repeat !== "off"}
                 onClick={() => transport.setRepeat(nextRepeat(repeat))}
                 className={`t-btn ${repeat !== "off" ? "text-app-accent" : "text-app-muted hover:text-app-text"}`}
               >

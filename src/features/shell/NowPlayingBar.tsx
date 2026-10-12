@@ -12,7 +12,7 @@ import {
 import { PlayPauseIcon } from "@/features/shell/PlayPauseIcon";
 import { TransportSeek } from "@/features/shell/SeekBar";
 import { SpeedControl } from "@/features/shell/SpeedControl";
-import { nextRepeat, useTransport } from "@/features/shell/useTransport";
+import { nextRepeat, repeatLabel, useTransport } from "@/features/shell/useTransport";
 import { Visualizer } from "@/features/shell/Visualizer";
 import { CoverThumb } from "@/lib/covers";
 import { displayArtist, displayTitle } from "@/lib/format";
@@ -115,7 +115,12 @@ function BarTransport({
 }) {
   return (
     <div className="flex items-center justify-center gap-2">
-      <IconButton label="Shuffle" active={shuffle} onClick={() => transport.setShuffle(!shuffle)}>
+      <IconButton
+        label="Shuffle"
+        active={shuffle}
+        pressed={shuffle}
+        onClick={() => transport.setShuffle(!shuffle)}
+      >
         <Shuffle key={String(shuffle)} size={15} className="t-pop" />
       </IconButton>
       <IconButton label="Previous" nudge="prev" disabled={!enabled} onClick={transport.previous}>
@@ -135,8 +140,9 @@ function BarTransport({
         <SkipForward size={16} />
       </IconButton>
       <IconButton
-        label="Repeat"
+        label={repeatLabel(repeat)}
         active={repeat !== "off"}
+        pressed={repeat !== "off"}
         onClick={() => transport.setRepeat(nextRepeat(repeat))}
       >
         {repeat === "one" ? (
@@ -152,6 +158,7 @@ function BarTransport({
 function IconButton({
   label,
   active,
+  pressed,
   nudge,
   disabled,
   onClick,
@@ -159,6 +166,7 @@ function IconButton({
 }: {
   label: string;
   active?: boolean;
+  pressed?: boolean;
   nudge?: "next" | "prev";
   disabled?: boolean;
   onClick: () => void;
@@ -169,6 +177,7 @@ function IconButton({
       type="button"
       title={label}
       aria-label={label}
+      aria-pressed={pressed}
       disabled={disabled}
       onClick={onClick}
       className={`t-btn flex h-8 w-8 items-center justify-center rounded-md disabled:opacity-40 ${

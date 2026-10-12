@@ -1,6 +1,9 @@
 import { openExternal } from "@/lib/api";
+import { openBrowsePage } from "@/features/player/browse";
 import { GITHUB_URL } from "@/lib/links";
 import { useAppStore } from "@/store/useAppStore";
+
+const press = "active:opacity-80";
 
 export function LibraryHome({
   onAddFolder,
@@ -30,14 +33,14 @@ export function LibraryHome({
           <button
             type="button"
             onClick={onAddFolder}
-            className="rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg"
+            className={`rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg ${press}`}
           >
             Add folder
           </button>
           <button
             type="button"
             onClick={onOpenFile}
-            className="rounded-md px-3 py-1.5 text-[13px] font-semibold text-app-subtle hover:bg-app-hover"
+            className={`rounded-md px-3 py-1.5 text-[13px] font-semibold text-app-subtle hover:bg-app-hover ${press}`}
           >
             Open file
           </button>
@@ -58,6 +61,38 @@ export function LibraryHome({
         Audios! takes a folder of audio files and plays them as a library. Artwork, artists, and
         albums come from the tags in those files.
       </p>
+      <div className="mt-6 flex flex-wrap justify-center gap-2">
+        <button
+          type="button"
+          onClick={onAddFolder}
+          className={`rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg ${press}`}
+        >
+          Add folder
+        </button>
+        <button
+          type="button"
+          onClick={onOpenFile}
+          className={`rounded-md px-3 py-1.5 text-[13px] font-semibold text-app-subtle hover:bg-app-hover ${press}`}
+        >
+          Open file
+        </button>
+      </div>
+      <div className="mt-3 flex flex-wrap justify-center gap-3">
+        <button
+          type="button"
+          onClick={() => void openBrowsePage({ kind: "library" })}
+          className={`text-[14px] font-semibold text-app-accent ${press}`}
+        >
+          Library
+        </button>
+        <button
+          type="button"
+          onClick={() => void openBrowsePage({ kind: "discover" })}
+          className={`text-[14px] font-semibold text-app-accent ${press}`}
+        >
+          Discover
+        </button>
+      </div>
       <button
         type="button"
         onClick={() => void openExternal(GITHUB_URL)}

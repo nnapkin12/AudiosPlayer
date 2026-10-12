@@ -86,6 +86,8 @@ export function SeekBar({
         }}
         onPointerUp={commitDrag}
         onPointerCancel={commitDrag}
+        aria-label="Seek"
+        aria-valuetext={`${formatTime(shown)} of ${formatTime(duration)}`}
         className="absolute inset-0 m-0 h-full w-full cursor-pointer opacity-0"
       />
     </div>

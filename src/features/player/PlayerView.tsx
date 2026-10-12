@@ -448,14 +448,14 @@ export function PlayerView() {
                     <button
                       type="button"
                       onClick={() => void pickAudioFilesInto(playlist.id)}
-                      className="rounded-md px-3 py-1.5 text-[13px] font-semibold text-app-subtle hover:bg-app-hover"
+                      className="rounded-md px-3 py-1.5 text-[13px] font-semibold text-app-subtle hover:bg-app-hover active:opacity-80"
                     >
                       Add songs
                     </button>
                     <button
                       type="button"
                       onClick={() => void pickFolderInto(playlist.id)}
-                      className="rounded-md px-3 py-1.5 text-[13px] font-semibold text-app-subtle hover:bg-app-hover"
+                      className="rounded-md px-3 py-1.5 text-[13px] font-semibold text-app-subtle hover:bg-app-hover active:opacity-80"
                     >
                       Add album
                     </button>
@@ -471,7 +471,7 @@ export function PlayerView() {
                       disabled={visibleTracks.length === 0 && !currentInPage}
                       title={showPause ? "Pause" : "Play"}
                       onClick={() => void playOrToggle()}
-                      className="flex items-center gap-1.5 rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg disabled:opacity-40"
+                      className="flex items-center gap-1.5 rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg active:opacity-80 disabled:opacity-40"
                     >
                       <PlayPauseIcon playing={showPause} size={14} />
                       {showPause ? "Pause" : "Play"}
@@ -493,7 +493,7 @@ export function PlayerView() {
                     disabled={visibleTracks.length === 0 && !currentInPage}
                     title={showPause ? "Pause" : "Play"}
                     onClick={() => void playOrToggle()}
-                    className="flex items-center gap-1.5 rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg disabled:opacity-40"
+                    className="flex items-center gap-1.5 rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg active:opacity-80 disabled:opacity-40"
                   >
                     <PlayPauseIcon playing={showPause} size={14} />
                     {showPause ? "Pause" : "Play"}
@@ -518,7 +518,7 @@ export function PlayerView() {
                       },
                     );
                   }}
-                  className="shrink-0 rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg"
+                  className="shrink-0 rounded-md bg-app-play px-3 py-1.5 text-[13px] font-semibold text-app-play-fg active:opacity-80"
                 >
                   Locate
                 </button>

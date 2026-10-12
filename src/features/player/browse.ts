@@ -84,10 +84,26 @@ export async function locateMissing(item: MissingItem, asFolder = false): Promis
 let browseGeneration = 0;
 const browsePast: BrowsePage[] = [];
 
+/** How many browse pages Back can return through. Older pages are dropped. */
+export const BROWSE_HISTORY_CAP = 32;
+
+export function keepsDiscoverCatalog(page: BrowsePage): boolean {
+  return page.kind === "discover" || page.kind === "artist" || page.kind === "album";
+}
+
+/** Push `page` and drop the oldest entries past the cap. */
+export function pushBrowsePast(past: BrowsePage[], page: BrowsePage): void {
+  past.push(page);
+  if (past.length > BROWSE_HISTORY_CAP) {
+    past.splice(0, past.length - BROWSE_HISTORY_CAP);
+  }
+}
+
 export function openBrowsePage(page: BrowsePage, force = false, record = true): Promise<void> {
   const store = useAppStore.getState();
+  if (!keepsDiscoverCatalog(page)) dropDiscoverTracks();
   if (record && !samePage(store.browse, page)) {
-    browsePast.push(store.browse);
+    pushBrowsePast(browsePast, store.browse);
     store.setCanGoBack(true);
   }
   store.setBrowse(page);
