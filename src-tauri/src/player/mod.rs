@@ -1087,24 +1087,20 @@ fn use_album_gain(queue: &Queue, track: &Track) -> bool {
     if queue
         .current()
         .is_some_and(|current| current.path == track.path)
-    {
-        if queue
+        && queue
             .peek_next()
             .is_some_and(|upcoming| upcoming.album != track.album)
-        {
-            return false;
-        }
+    {
+        return false;
     }
     if queue
         .peek_next()
         .is_some_and(|upcoming| upcoming.path == track.path)
-    {
-        if queue
+        && queue
             .current()
             .is_some_and(|current| current.album != track.album)
-        {
-            return false;
-        }
+    {
+        return false;
     }
     true
 }

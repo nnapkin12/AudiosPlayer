@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  BROWSE_HISTORY_CAP,
-  keepsDiscoverCatalog,
-  pushBrowsePast,
-} from "@/features/player/browse";
+import { BROWSE_HISTORY_CAP, keepsDiscoverCatalog, pushBrowsePast } from "@/features/player/browse";
 import type { BrowsePage } from "@/lib/types";
 
 describe("browse history", () => {

@@ -52,6 +52,8 @@ pub trait PlayerEngine: Send + Sync {
     /// Gain of the source that is producing sound. A gapless append updates
     /// this when it starts, before the player ticker notices the hop.
     fn set_playback_gain(&self, gain: f64) -> AppResult<()>;
+    /// Read by tests. Production code applies the gain inside the source.
+    #[cfg(test)]
     fn playback_gain(&self) -> f64;
     fn set_speed(&self, speed: f64) -> AppResult<()>;
     fn speed(&self) -> f64;
@@ -224,6 +226,7 @@ impl PlayerEngine for RodioEngine {
         Ok(())
     }
 
+    #[cfg(test)]
     fn playback_gain(&self) -> f64 {
         f64::from(self.eq.playback_gain())
     }
